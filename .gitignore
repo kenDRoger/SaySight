@@ -1,0 +1,38 @@
+# Keep only the application and operational files in this repository.
+*
+
+# Repository configuration and entry points
+!.gitignore
+!README.md
+!docker-compose.yml
+
+# Application source
+!frontend/
+!frontend/**
+!api/
+!api/**
+!worker/
+!worker/**
+!migrations/
+!migrations/**
+!scripts/
+!scripts/**
+
+# Generated and local files inside whitelisted directories
+**/node_modules/
+**/dist/
+**/build/
+**/coverage/
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+
+# Local credentials and data
+**/*.pem
+**/*.key
+postgres-data/
+object-data/
+api/data/
+

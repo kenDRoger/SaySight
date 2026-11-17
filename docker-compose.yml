@@ -1,0 +1,105 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: saysight
+      POSTGRES_USER: saysight
+      POSTGRES_PASSWORD: saysight-dev-only
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saysight -d saysight"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  object-storage:
+    image: chainguard/minio:latest@sha256:59953701f8f8d0de81aab456f0b0b6c0a1804119415559bf7ede79d944108879
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: saysight
+      MINIO_ROOT_PASSWORD: saysight-dev-only
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - object-data:/data
+
+  migrations:
+    image: postgres:16-alpine
+    entrypoint: ["sh", "/scripts/migrate.sh"]
+    environment:
+      POSTGRES_DB: saysight
+      POSTGRES_USER: saysight
+      POSTGRES_PASSWORD: saysight-dev-only
+    volumes:
+      - ./migrations:/migrations:ro
+      - ./scripts/migrate.sh:/scripts/migrate.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://saysight:saysight-dev-only@postgres:5432/saysight
+      WORKER_URL: http://worker:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  seed:
+    image: saysight-api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["node", "scripts/seed.mjs"]
+    environment:
+      API_INTERNAL_URL: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: "no"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      API_PROXY_TARGET: http://api:3000
+    ports:
+      - "5173:5173"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  object-data:

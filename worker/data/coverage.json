@@ -1,0 +1,480 @@
+[
+  {
+    "year": 2000,
+    "status": "partial_historical_coverage",
+    "rows": 1413,
+    "amount_pesos": 552399259000,
+    "scopes": {
+      "unprogrammed_appropriations": 48681831000,
+      "current_new_appropriations": 503717428000
+    },
+    "grains": {
+      "agency_total": 112,
+      "fund_total": 7,
+      "program_total": 1282,
+      "purpose_total": 12
+    },
+    "notes": [
+      "Printed agency controls and reconciled program partitions; complete national coverage is not established. Automatic appropriations are incomplete.",
+      "Historical published categories are retained: some new-appropriation tables include IRA or debt interest, unlike later years. These scopes are not a legal-authority crosswalk."
+    ],
+    "path": "parquet/gaa-2000.parquet"
+  },
+  {
+    "year": 2001,
+    "status": "reenacted_no_new_gaa",
+    "source_year": 2000,
+    "rows": 0,
+    "amount_pesos": null,
+    "notes": [
+      "Empty facts do not mean zero budget or spending."
+    ]
+  },
+  {
+    "year": 2002,
+    "status": "partial_historical_coverage",
+    "rows": 1218,
+    "amount_pesos": 758275751000,
+    "scopes": {
+      "automatic_appropriations": 204267000000,
+      "current_new_appropriations": 554008751000
+    },
+    "grains": {
+      "purpose_total": 18,
+      "agency_total": 34,
+      "fund_total": 8,
+      "program_total": 1158
+    },
+    "notes": [
+      "Printed agency controls and reconciled program partitions; complete national coverage is not established. Automatic appropriations are incomplete.",
+      "Historical published categories are retained: some new-appropriation tables include IRA or debt interest, unlike later years. These scopes are not a legal-authority crosswalk."
+    ],
+    "path": "parquet/gaa-2002.parquet"
+  },
+  {
+    "year": 2003,
+    "status": "partial_historical_coverage",
+    "rows": 1866,
+    "amount_pesos": 609373494000,
+    "scopes": {
+      "current_new_appropriations_first_preference": 519141395000,
+      "current_new_appropriations_second_preference": 35956219000,
+      "unprogrammed_appropriations": 54275880000
+    },
+    "grains": {
+      "purpose_total": 17,
+      "fund_total": 6,
+      "program_total": 1804,
+      "agency_total": 39
+    },
+    "notes": [
+      "Printed agency controls and reconciled program partitions; complete national coverage is not established. Automatic appropriations are incomplete.",
+      "Historical published categories are retained: some new-appropriation tables include IRA or debt interest, unlike later years. These scopes are not a legal-authority crosswalk.",
+      "First-preference and second-preference appropriations remain separate scopes. Do not sum them as interchangeable editions."
+    ],
+    "path": "parquet/gaa-2003.parquet"
+  },
+  {
+    "year": 2004,
+    "status": "reenacted_no_new_gaa",
+    "source_year": 2003,
+    "rows": 0,
+    "amount_pesos": null,
+    "notes": [
+      "Empty facts do not mean zero budget or spending."
+    ]
+  },
+  {
+    "year": 2005,
+    "status": "partial_historical_coverage",
+    "rows": 1016,
+    "amount_pesos": 598447548000,
+    "scopes": {
+      "unprogrammed_appropriations": 34854520000,
+      "current_new_appropriations": 563593028000
+    },
+    "grains": {
+      "agency_total": 23,
+      "purpose_total": 8,
+      "fund_total": 7,
+      "program_total": 978
+    },
+    "notes": [
+      "Printed agency controls and reconciled program partitions; complete national coverage is not established. Automatic appropriations are incomplete.",
+      "Historical published categories are retained: some new-appropriation tables include IRA or debt interest, unlike later years. These scopes are not a legal-authority crosswalk."
+    ],
+    "path": "parquet/gaa-2005.parquet"
+  },
+  {
+    "year": 2006,
+    "status": "reenacted_no_new_gaa",
+    "source_year": 2005,
+    "rows": 0,
+    "amount_pesos": null,
+    "notes": [
+      "Empty facts do not mean zero budget or spending."
+    ]
+  },
+  {
+    "year": 2007,
+    "status": "partial_historical_coverage",
+    "rows": 359,
+    "amount_pesos": 1137164477000,
+    "scopes": {
+      "unprogrammed_appropriations": 61129460000,
+      "automatic_appropriations": 502122599000,
+      "published_new_appropriations": 573912418000
+    },
+    "grains": {
+      "fund_total": 2,
+      "agency_total": 340,
+      "department_total": 17
+    },
+    "notes": [
+      "Published new-appropriation summary plus explicitly printed automatic annex totals. Agency totals have no invented program or object dimensions.",
+      "Annexes list IRA and, for 2007, interest; full automatic coverage is not established."
+    ],
+    "path": "parquet/gaa-2007.parquet"
+  },
+  {
+    "year": 2008,
+    "status": "partial_historical_coverage",
+    "rows": 357,
+    "amount_pesos": 1276910060000,
+    "scopes": {
+      "unprogrammed_appropriations": 114492091000,
+      "automatic_appropriations": 210730203000,
+      "published_new_appropriations": 951687766000
+    },
+    "grains": {
+      "agency_total": 339,
+      "department_total": 17,
+      "fund_total": 1
+    },
+    "notes": [
+      "Published new-appropriation summary plus explicitly printed automatic annex totals. Agency totals have no invented program or object dimensions.",
+      "Annexes list IRA and, for 2007, interest; full automatic coverage is not established."
+    ],
+    "path": "parquet/gaa-2008.parquet"
+  },
+  {
+    "year": 2009,
+    "status": "published_source_baseline",
+    "rows": 33600,
+    "amount_pesos": 1490670194000,
+    "scopes": {
+      "automatic_appropriations": 320351441000,
+      "unprogrammed_appropriations": 75970194000,
+      "current_new_appropriations": 1094348559000
+    },
+    "grains": {
+      "program_area_expense": 33600
+    },
+    "notes": [
+      "Legacy CSV source categories retained; published new appropriations in 2009–2010 include debt interest. Organizational codes have no modern crosswalk."
+    ],
+    "path": "parquet/gaa-2009.parquet"
+  },
+  {
+    "year": 2010,
+    "status": "published_source_baseline",
+    "rows": 33540,
+    "amount_pesos": 1659513946000,
+    "scopes": {
+      "automatic_appropriations": 355107546000,
+      "unprogrammed_appropriations": 118913946000,
+      "current_new_appropriations": 1185492454000
+    },
+    "grains": {
+      "program_area_expense": 33540
+    },
+    "notes": [
+      "Legacy CSV source categories retained; published new appropriations in 2009–2010 include debt interest. Organizational codes have no modern crosswalk."
+    ],
+    "path": "parquet/gaa-2010.parquet"
+  },
+  {
+    "year": 2011,
+    "status": "published_source_baseline",
+    "rows": 33551,
+    "amount_pesos": 1711908492000,
+    "scopes": {
+      "current_new_appropriations": 933479272000,
+      "automatic_appropriations": 711520728000,
+      "unprogrammed_appropriations": 66908492000
+    },
+    "grains": {
+      "program_area_expense": 33551
+    },
+    "notes": [
+      "Legacy CSV source categories retained; published new appropriations in 2009–2010 include debt interest. Organizational codes have no modern crosswalk."
+    ],
+    "path": "parquet/gaa-2011.parquet"
+  },
+  {
+    "year": 2012,
+    "status": "published_source_baseline",
+    "rows": 37235,
+    "amount_pesos": 1968821845000,
+    "scopes": {
+      "current_new_appropriations": 1092371425000,
+      "automatic_appropriations": 723628575000,
+      "unprogrammed_appropriations": 152821845000
+    },
+    "grains": {
+      "program_area_expense": 37235
+    },
+    "notes": [
+      "Legacy CSV source categories retained; published new appropriations in 2009–2010 include debt interest. Organizational codes have no modern crosswalk."
+    ],
+    "path": "parquet/gaa-2012.parquet"
+  },
+  {
+    "year": 2013,
+    "status": "published_source_baseline",
+    "rows": 39762,
+    "amount_pesos": 2123448371000,
+    "scopes": {
+      "current_new_appropriations": 1250680785000,
+      "automatic_appropriations": 755219215000,
+      "unprogrammed_appropriations": 117548371000
+    },
+    "grains": {
+      "program_area_expense": 39762
+    },
+    "notes": [
+      "Legacy CSV source categories retained; published new appropriations in 2009–2010 include debt interest. Organizational codes have no modern crosswalk."
+    ],
+    "path": "parquet/gaa-2013.parquet"
+  },
+  {
+    "year": 2014,
+    "status": "published_source_baseline",
+    "rows": 358,
+    "amount_pesos": 2404532259000,
+    "scopes": {
+      "published_new_appropriations": 1468599325000,
+      "unprogrammed_appropriations": 139903759000,
+      "automatic_appropriations": 796029175000
+    },
+    "grains": {
+      "fund_total": 1,
+      "agency_total": 342,
+      "department_total": 15
+    },
+    "notes": [
+      "Published new-appropriation summary plus explicitly printed automatic annex totals. Agency totals have no invented program or object dimensions.",
+      "Scanned summary transcription reconciles all department and agency partitions; retained review status is visible on each row."
+    ],
+    "path": "parquet/gaa-2014.parquet"
+  },
+  {
+    "year": 2015,
+    "status": "published_source_baseline",
+    "rows": 376506,
+    "amount_pesos": 2729056081000,
+    "scopes": {
+      "automatic_appropriations": 866231428000,
+      "unprogrammed_appropriations": 123056081000,
+      "current_new_appropriations": 1739768572000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 376505,
+      "fund_total": 1
+    },
+    "notes": [
+      "Consolidated CSV plus the separately published conditional Unprogrammed Fund total."
+    ],
+    "path": "parquet/gaa-2015.parquet"
+  },
+  {
+    "year": 2016,
+    "status": "published_source_baseline",
+    "rows": 412821,
+    "amount_pesos": 3069300000000,
+    "scopes": {
+      "automatic_appropriations": 930695404000,
+      "unprogrammed_appropriations": 67500000000,
+      "current_new_appropriations": 2071104596000
+    },
+    "grains": {
+      "fund_total": 2,
+      "program_operunit_fund_expense_object": 412812,
+      "agency_total": 7
+    },
+    "notes": [
+      "Detailed new appropriations supplemented by printed ALGU, JLEC and BSGC-Others. Full automatic summary replaces incomplete automatic spreadsheet detail."
+    ],
+    "path": "parquet/gaa-2016.parquet"
+  },
+  {
+    "year": 2017,
+    "status": "published_source_baseline",
+    "rows": 206927,
+    "amount_pesos": 3417500000000,
+    "scopes": {
+      "unprogrammed_appropriations": 67500000000,
+      "automatic_appropriations": 918013048000,
+      "current_new_appropriations": 2431986952000
+    },
+    "grains": {
+      "fund_total": 1,
+      "program_operunit_fund_expense_object": 206902,
+      "agency_total": 24
+    },
+    "notes": [
+      "DA, DepEd and DND use published agency summary partitions because spreadsheet totals differ. Full automatic summary replaces incomplete spreadsheet detail. Other departments retain object detail."
+    ],
+    "path": "parquet/gaa-2017.parquet"
+  },
+  {
+    "year": 2018,
+    "status": "published_source_baseline",
+    "rows": 518333,
+    "amount_pesos": 3842340000000,
+    "scopes": {
+      "current_new_appropriations": 2786187550000,
+      "automatic_appropriations": 980812450000,
+      "unprogrammed_appropriations": 75340000000
+    },
+    "grains": {
+      "fund_total": 1,
+      "program_operunit_fund_expense_object": 518332
+    },
+    "notes": [
+      "Consolidated spreadsheet plus the separately published conditional Unprogrammed Fund total."
+    ],
+    "path": "parquet/gaa-2018.parquet"
+  },
+  {
+    "year": 2019,
+    "status": "published_editions_differ",
+    "rows": 11393,
+    "amount_pesos": 3858784089000,
+    "scopes": {
+      "unprogrammed_appropriations": 197135780000,
+      "automatic_appropriations": 1071536796000,
+      "current_new_appropriations": 2590111513000
+    },
+    "grains": {
+      "agency_object": 11387,
+      "fund_total": 6
+    },
+    "notes": [
+      "Agency-object tables plus four missing special-fund controls and automatic summary. DPWH technical-edition total is PHP454,016,273,000 versus PHP549,390,514,000 in the Volume I summary. The release retains the technical amount and records this edition difference; it does not silently balance to the older summary."
+    ],
+    "path": "parquet/gaa-2019.parquet"
+  },
+  {
+    "year": 2020,
+    "status": "published_source_baseline",
+    "rows": 542735,
+    "amount_pesos": 4099988785000,
+    "scopes": {
+      "existing_gaa_extract_scope": 4099988785000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 542735
+    },
+    "notes": [
+      "Exact existing-extract monetary row count and total preserved; scope is the existing published extract, not reinterpreted."
+    ],
+    "path": "parquet/gaa-2020.parquet"
+  },
+  {
+    "year": 2021,
+    "status": "published_source_baseline",
+    "rows": 495136,
+    "amount_pesos": 4506000000000,
+    "scopes": {
+      "existing_gaa_extract_scope": 4506000000000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 495136
+    },
+    "notes": [
+      "Exact existing-extract monetary row count and total preserved; scope is the existing published extract, not reinterpreted."
+    ],
+    "path": "parquet/gaa-2021.parquet"
+  },
+  {
+    "year": 2022,
+    "status": "published_source_baseline",
+    "rows": 525900,
+    "amount_pesos": 5023600000000,
+    "scopes": {
+      "existing_gaa_extract_scope": 5023600000000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 525900
+    },
+    "notes": [
+      "Exact existing-extract monetary row count and total preserved; scope is the existing published extract, not reinterpreted."
+    ],
+    "path": "parquet/gaa-2022.parquet"
+  },
+  {
+    "year": 2023,
+    "status": "published_source_baseline",
+    "rows": 523577,
+    "amount_pesos": 5268000000000,
+    "scopes": {
+      "existing_gaa_extract_scope": 5268000000000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 523577
+    },
+    "notes": [
+      "Exact existing-extract monetary row count and total preserved; scope is the existing published extract, not reinterpreted."
+    ],
+    "path": "parquet/gaa-2023.parquet"
+  },
+  {
+    "year": 2024,
+    "status": "published_source_baseline",
+    "rows": 532082,
+    "amount_pesos": 5767600000000,
+    "scopes": {
+      "existing_gaa_extract_scope": 5767600000000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 532082
+    },
+    "notes": [
+      "Exact existing-extract monetary row count and total preserved; scope is the existing published extract, not reinterpreted."
+    ],
+    "path": "parquet/gaa-2024.parquet"
+  },
+  {
+    "year": 2025,
+    "status": "published_source_baseline",
+    "rows": 545875,
+    "amount_pesos": 6326324300000,
+    "scopes": {
+      "existing_gaa_extract_scope": 6326324300000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 545875
+    },
+    "notes": [
+      "Exact existing-extract monetary row count and total preserved; scope is the existing published extract, not reinterpreted."
+    ],
+    "path": "parquet/gaa-2025.parquet"
+  },
+  {
+    "year": 2026,
+    "status": "published_source_baseline",
+    "rows": 556865,
+    "amount_pesos": 6793162000000,
+    "scopes": {
+      "existing_gaa_extract_scope": 6793162000000
+    },
+    "grains": {
+      "program_operunit_fund_expense_object": 556865
+    },
+    "notes": [
+      "Exact existing-extract monetary row count and total preserved; scope is the existing published extract, not reinterpreted."
+    ],
+    "path": "parquet/gaa-2026.parquet"
+  }
+]

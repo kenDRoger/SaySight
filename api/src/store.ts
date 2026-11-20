@@ -124,6 +124,25 @@ export async function getFinding(id: string): Promise<Finding | undefined> {
   return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
 }
 
+export type ExplanationRecord = { id: string; findingId: string; text: string; source: 'llm' | 'template'; provider: string | null; model: string | null; templateVersion: string; createdAt: string };
+
+export async function saveExplanation(input: { findingId: string; text: string; source: 'llm' | 'template'; provider?: string; model?: string; templateVersion: string }): Promise<ExplanationRecord> {
+  if (!pool) throw new Error('database_required');
+  const record: ExplanationRecord = { id: randomUUID(), findingId: input.findingId, text: input.text, source: input.source,
+    provider: input.provider ?? null, model: input.model ?? null, templateVersion: input.templateVersion, createdAt: new Date().toISOString() };
+  await pool.query('INSERT INTO explanations (id, finding_id, text, source, provider, model, template_version) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [record.id, record.findingId, record.text, record.source, record.provider, record.model, record.templateVersion]);
+  return record;
+}
+
+export async function getLatestExplanation(findingId: string): Promise<ExplanationRecord | undefined> {
+  if (!pool) return undefined;
+  const result = await pool.query('SELECT id, finding_id, text, source, provider, model, template_version, created_at FROM explanations WHERE finding_id = $1 ORDER BY created_at DESC LIMIT 1', [findingId]);
+  const row = result.rows[0];
+  return row ? { id: row.id, findingId: row.finding_id, text: row.text, source: row.source, provider: row.provider,
+    model: row.model, templateVersion: row.template_version, createdAt: row.created_at.toISOString() } : undefined;
+}
+
 export type Comment = { id: string; findingId: string; authorId: string; body: string; status: 'visible' | 'removed'; createdAt: string; removalReason: string | null };
 
 export async function createComment(input: { findingId: string; authorId: string; body: string }): Promise<Comment> {

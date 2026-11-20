@@ -3,7 +3,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listTransitions, pool, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getLatestExplanation, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listTransitions, pool, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveNormalizedCoverage } from './store.js';
+import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { checkImpactGate, conflictRecord, deriveImpact, isImpact, type Impact } from './impact.js';
@@ -75,6 +76,16 @@ const auth = pool
     })
   : undefined;
 const cookieSecure = process.env.COOKIE_SECURE === 'true';
+// Explanations only rephrase an existing result. With no provider configured the
+// explainer answers with the deterministic template, which is the required fallback.
+const explanationEndpoint = process.env.EXPLANATION_PROVIDER_ENDPOINT;
+const explanationModel = process.env.EXPLANATION_PROVIDER_MODEL;
+const explainer = createExplainer({
+  provider: explanationEndpoint && explanationModel
+    ? { name: process.env.EXPLANATION_PROVIDER_NAME ?? 'openai-compatible', model: explanationModel, endpoint: explanationEndpoint, apiKey: process.env.EXPLANATION_API_KEY }
+    : undefined,
+  timeoutMs: Number(process.env.EXPLANATION_TIMEOUT_MS ?? 8000),
+});
 const requestSessionToken = (request: IncomingMessage) => readCookie(request.headers.cookie, sessionCookie);
 
 const server = createServer((request, response) => {
@@ -257,6 +268,37 @@ const server = createServer((request, response) => {
         json(response, 503, { error: 'comments_unavailable' });
       }
     });
+    return;
+  }
+
+  const newExplanationMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/explanation$/) : undefined;
+  if (newExplanationMatch) {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    (async () => {
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      const finding = await getFinding(newExplanationMatch[1]);
+      if (!finding) { json(response, 404, { error: 'finding_not_found' }); return; }
+      const evidence = await getEvidence(finding.evidenceId);
+      if (!evidence) { json(response, 404, { error: 'evidence_not_found' }); return; }
+      const explanation = await explainer.explain({
+        recipe: evidence.recipe, recipeVersion: evidence.recipeVersion, filters: evidence.filters,
+        inputRows: evidence.inputRows, outputRows: evidence.outputRows, validation: evidence.validation,
+        warnings: evidence.warnings, limitations: evidence.limitations, result: evidence.result,
+      });
+      // The generated text is stored beside the evidence, never attached to it.
+      const record = await saveExplanation({
+        findingId: finding.id, text: explanation.text, source: explanation.source,
+        provider: explanation.provider, model: explanation.model, templateVersion: explanation.templateVersion,
+      });
+      json(response, 201, record);
+    })().catch(() => json(response, 503, { error: 'explanation_unavailable' }));
+    return;
+  }
+
+  const explanationMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/explanation$/) : undefined;
+  if (explanationMatch) {
+    getLatestExplanation(explanationMatch[1]).then((record) => json(response, 200, { explanation: record ?? null })).catch(() => json(response, 503, { error: 'explanation_unavailable' }));
     return;
   }
 
@@ -448,10 +490,14 @@ const server = createServer((request, response) => {
       const transitions = await listTransitions(finding.id).catch(() => []);
       const comments = await listComments(finding.id).catch(() => []);
       const conflicts = await listConflicts(finding.id).catch(() => []);
+      const explanation = await getLatestExplanation(finding.id).catch(() => undefined);
       const dataset = catalog.find((item) => item.id === evidence?.datasetReleaseId);
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       const details = evidence ? `<section aria-labelledby="evidence-heading"><h2 id="evidence-heading">Evidence</h2><dl><dt>Dataset</dt><dd>${escapeHtml(dataset?.name ?? evidence.datasetReleaseId)}</dd><dt>Source</dt><dd>${dataset ? `<a href="${escapeHtml(dataset.sourceUrl)}">${escapeHtml(dataset.sourceUrl)}</a>` : escapeHtml(evidence.datasetReleaseId)}</dd><dt>Release</dt><dd><code>${escapeHtml(evidence.datasetReleaseId)}</code></dd><dt>SHA-256</dt><dd><code>${escapeHtml(evidence.releaseChecksum)}</code></dd><dt>Recipe</dt><dd>${escapeHtml(evidence.recipe)} v${escapeHtml(evidence.recipeVersion)}</dd><dt>Calculation</dt><dd>${escapeHtml(evidence.calculation)}</dd><dt>Filters</dt><dd><pre>${escapeHtml(JSON.stringify(evidence.filters, null, 2))}</pre></dd><dt>Rows</dt><dd>${evidence.inputRows} input, ${evidence.outputRows} output</dd><dt>Reproducibility</dt><dd>${escapeHtml(evidence.reproducibilityStatus)}</dd><dt>Validation</dt><dd><pre>${escapeHtml(JSON.stringify(evidence.validation, null, 2))}</pre></dd></dl><h3>Result</h3><pre>${escapeHtml(JSON.stringify(evidence.result, null, 2))}</pre><h3>Warnings</h3><ul>${evidence.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul><h3>Limitations</h3><ul>${evidence.limitations.map((limitation) => `<li>${escapeHtml(limitation)}</li>`).join('')}</ul></section>` : '<p>Evidence unavailable.</p>';
-      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong> · Review depth: ${escapeHtml(finding.impact)}</p>${conflicts.length ? `<p><strong>Reviewers disagreed</strong>: ${conflicts.map((conflict) => escapeHtml(conflict.statuses.join(' vs '))).join('; ')} — both positions are recorded in the history.</p>` : ''}${transitions.length ? `<section aria-labelledby="history-heading"><h2 id="history-heading">Review history</h2><ol>${transitions.map((transition) => `<li><strong>${escapeHtml(transition.toStatus)}</strong> — ${escapeHtml(transition.reason)} <small>(${escapeHtml(transition.createdAt)})</small></li>`).join('')}</ol></section>` : ''}<p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}<section aria-labelledby="comments-heading"><h2 id="comments-heading">Comments</h2>${comments.length ? `<ol>${comments.map((comment) => comment.status === 'removed'
+      const explanationSection = explanation
+        ? `<section aria-labelledby="explanation-heading"><h2 id="explanation-heading">Explanation</h2><p>${escapeHtml(explanation.text)}</p><p><small>${explanation.source === 'llm' ? `From a model (${escapeHtml(explanation.provider ?? 'unknown')} / ${escapeHtml(explanation.model ?? 'unknown')})` : 'From the deterministic template'}, template version ${escapeHtml(explanation.templateVersion)}.</small></p></section>`
+        : '';
+      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong> · Review depth: ${escapeHtml(finding.impact)}</p>${conflicts.length ? `<p><strong>Reviewers disagreed</strong>: ${conflicts.map((conflict) => escapeHtml(conflict.statuses.join(' vs '))).join('; ')} — both positions are recorded in the history.</p>` : ''}${transitions.length ? `<section aria-labelledby="history-heading"><h2 id="history-heading">Review history</h2><ol>${transitions.map((transition) => `<li><strong>${escapeHtml(transition.toStatus)}</strong> — ${escapeHtml(transition.reason)} <small>(${escapeHtml(transition.createdAt)})</small></li>`).join('')}</ol></section>` : ''}<p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}${explanationSection}<section aria-labelledby="comments-heading"><h2 id="comments-heading">Comments</h2>${comments.length ? `<ol>${comments.map((comment) => comment.status === 'removed'
         ? `<li><em>Comment removed by a moderator</em>${comment.removalReason ? ` — ${escapeHtml(comment.removalReason)}` : ''}</li>`
         : `<li>${escapeHtml(comment.body)} <small>(${escapeHtml(comment.createdAt)})</small></li>`).join('')}</ol>` : '<p>No comments yet.</p>'}</section></main></body></html>`);
     }).catch(() => { response.writeHead(503); response.end('Finding page unavailable'); });

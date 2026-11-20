@@ -99,6 +99,29 @@ maintainers can remove one, with a mandatory reason recorded in the append-only
 `comment_moderation` log. Pre-moderation remains the documented alternative if
 BetterGov prefers it, and the `comments.status` column already allows it.
 
+### Explanations
+
+- `POST /api/v1/findings/:id/explanation` — signed in; generates and stores a
+  bounded explanation of the finding's existing result.
+- `GET /api/v1/findings/:id/explanation` — public; `{ "explanation": record | null }`,
+  the latest one.
+
+The text only rephrases the structured result already stored as evidence. It
+never calculates, selects a recipe, or decides a status, and it is never treated
+as evidence itself — the latest explanation is shown on the public finding page
+under its own heading, above the comments.
+
+The deterministic template answers whenever no provider is configured or the
+provider fails, times out, or returns oversized or invalid text, so the feature
+works with no network and no API key. Each generation is stored in the
+append-only `explanations` table with its provider, model, and template version,
+and the page says which source a reader is looking at.
+
+Environment: `EXPLANATION_PROVIDER_ENDPOINT` and `EXPLANATION_PROVIDER_MODEL`
+(both required to enable a provider), `EXPLANATION_PROVIDER_NAME` (default
+`openai-compatible`), `EXPLANATION_API_KEY`, and `EXPLANATION_TIMEOUT_MS`
+(default `8000`).
+
 ## Accessibility audit
 
 With the stack running:

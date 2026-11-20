@@ -1,0 +1,13 @@
+{
+  "name": "saysight-a11y-audit",
+  "private": true,
+  "type": "module",
+  "description": "Accessibility and mobile-overflow audit for the Saysight UI (axe-core via Playwright).",
+  "scripts": {
+    "audit": "node audit.mjs"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.10.1",
+    "playwright": "^1.49.1"
+  }
+}

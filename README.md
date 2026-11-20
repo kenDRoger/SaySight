@@ -25,5 +25,16 @@ Local-only database and MinIO development credentials are configured in `docker-
 - `worker/` — Go checksum/import validation and deterministic recipe execution.
 - `migrations/` — ordered PostgreSQL schema migrations.
 - `scripts/` — migration tracking and local database setup; the public sample seed lives in `api/scripts/seed.mjs`.
+- `scripts/a11y/` — accessibility and mobile-overflow audit (axe-core via Playwright).
+
+## Accessibility audit
+
+With the stack running:
+
+```sh
+cd scripts/a11y && npm install && npm run audit
+```
+
+It checks the catalog/analysis page and a public finding page at 1280px and 375px, fails on any axe violation or horizontal overflow, and uses Playwright's Chromium unless `BROWSER_PATH` names an installed browser. Set `APP_URL`, `API_URL`, or `WIDTHS` to override the defaults.
 
 The first release is a frozen, checksum-verified source snapshot. Scheduled source refresh, authenticated review, and publication of general user uploads are later staged work; see `mvp.md`.

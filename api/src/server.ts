@@ -295,15 +295,20 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === 'POST' && request.url === '/api/v1/findings') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
     readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
       if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      // Submission is an authenticated act: the author is recorded and the
+      // finding starts Unverified, exactly like every other source.
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       try {
         const payload = JSON.parse(incoming.data.toString('utf8')) as { evidence_id?: unknown };
         if (typeof payload.evidence_id !== 'string') { json(response, 400, { error: 'evidence_id_required' }); return; }
         const evidence = await getEvidence(payload.evidence_id);
         if (!evidence) { json(response, 404, { error: 'evidence_not_found' }); return; }
-        json(response, 201, await createFinding(evidence.id));
+        json(response, 201, await createFinding(evidence.id, user.id));
       } catch { json(response, 400, { error: 'invalid_json' }); }
     });
     return;

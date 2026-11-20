@@ -25,7 +25,7 @@ export type Evidence = {
 // Accounts require durable storage, so the pool is shared with the auth layer.
 export const pool: Pool | undefined = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : undefined;
 const memory = new Map<string, Evidence>();
-type Finding = { id: string; evidenceId: string; status: 'Unverified'; createdAt: string };
+type Finding = { id: string; evidenceId: string; status: string; submittedBy: string | null; createdAt: string };
 const findings = new Map<string, Finding>();
 const draftReleases = new Map<string, { id: string; name: string; filename: string; checksum: string; status: 'draft'; createdAt: string }>();
 
@@ -107,19 +107,19 @@ export async function saveEvidence(input: Omit<Evidence, 'id' | 'createdAt'>): P
   return evidence;
 }
 
-export async function createFinding(evidenceId: string): Promise<Finding> {
-  const finding: Finding = { id: randomUUID(), evidenceId, status: 'Unverified', createdAt: new Date().toISOString() };
+export async function createFinding(evidenceId: string, submittedBy: string): Promise<Finding> {
+  const finding: Finding = { id: randomUUID(), evidenceId, status: 'Unverified', submittedBy, createdAt: new Date().toISOString() };
   findings.set(finding.id, finding);
-  if (pool) await pool.query('INSERT INTO findings (id, analysis_run_id, status) VALUES ($1, $2, $3)', [finding.id, evidenceId, finding.status]);
+  if (pool) await pool.query('INSERT INTO findings (id, analysis_run_id, status, submitted_by) VALUES ($1, $2, $3, $4)', [finding.id, evidenceId, finding.status, submittedBy]);
   return finding;
 }
 
 export async function getFinding(id: string): Promise<Finding | undefined> {
   if (findings.has(id)) return findings.get(id);
   if (!pool) return undefined;
-  const result = await pool.query('SELECT id, analysis_run_id, status, created_at FROM findings WHERE id = $1', [id]);
+  const result = await pool.query('SELECT id, analysis_run_id, status, submitted_by, created_at FROM findings WHERE id = $1', [id]);
   const row = result.rows[0];
-  return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, createdAt: row.created_at.toISOString() } : undefined;
+  return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
 }
 
 export async function getEvidence(id: string): Promise<Evidence | undefined> {

@@ -50,6 +50,9 @@ other account starts as a submitter and is promoted by an operator:
 docker compose exec api node scripts/promote.mjs reviewer@example.org reviewer
 ```
 
+Submitting a finding requires a session (`POST /api/v1/findings` answers
+`401 sign_in_required` anonymously) and records the author on the finding.
+
 Relevant environment: `SAYSIGHT_MAINTAINER_EMAIL` (first maintainer),
 `SAYSIGHT_BASE_URL` (magic-link origin), `COOKIE_SECURE` (set `true` behind
 HTTPS). `GET /api/v1/auth/me` reports the signed-in account, and

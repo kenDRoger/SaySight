@@ -52,8 +52,9 @@ services:
       S3_ACCESS_KEY: saysight
       S3_SECRET_KEY: saysight-dev-only
       S3_SECURE: "false"
-    expose:
-      - "8080"
+    # Published locally so the HTTP route tests can create real evidence.
+    ports:
+      - "8080:8080"
     # Deployment-level resource limits; the worker has no in-process CPU/memory caps.
     mem_limit: 512m
     cpus: 1.0

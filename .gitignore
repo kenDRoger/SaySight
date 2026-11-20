@@ -4,6 +4,7 @@
 # Repository configuration and entry points
 !.gitignore
 !README.md
+!AGENTS.md
 !docker-compose.yml
 
 # Application source
@@ -30,6 +31,7 @@
 **/*.log
 
 # Local credentials and data
+worker/worker
 **/*.pem
 **/*.key
 postgres-data/

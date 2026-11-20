@@ -4,7 +4,8 @@
   "type": "module",
   "description": "Accessibility and mobile-overflow audit for the Saysight UI (axe-core via Playwright).",
   "scripts": {
-    "audit": "node audit.mjs"
+    "audit": "node audit.mjs",
+    "ui": "node ui.mjs"
   },
   "dependencies": {
     "@axe-core/playwright": "^4.10.1",

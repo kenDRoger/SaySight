@@ -4,14 +4,13 @@
 // the API on :3000. Override with APP_URL / API_URL, and set BROWSER_PATH to use
 // an installed Chromium-based browser instead of Playwright's bundled one.
 //
-// Submitting a finding requires an account (MVP-B), so set AUDIT_SESSION to the
-// value of the saysight_session cookie. Obtain one with:
-//   curl -s -X POST localhost:3000/api/v1/auth/magic-link -H 'content-type: application/json' -d '{"email":"you@example.org"}'
-//   docker compose logs api | grep 'magic link for'   # take the token, then:
-//   curl -s -c /tmp/ck.txt -H 'accept: application/json' '<link>' && grep saysight_session /tmp/ck.txt
-//
-// It creates one analysis and one Unverified finding so the public finding page
-// can be audited; that evidence is append-only and stays in the database.
+// The audit signs itself in through the magic-link flow (log-only mail transport)
+// unless AUDIT_SESSION supplies a saysight_session value directly. It creates one
+// analysis and one Unverified finding so the public finding page can be audited;
+// that evidence is append-only and stays in the database.
+import { execFileSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { AxeBuilder } from '@axe-core/playwright';
 
@@ -19,10 +18,49 @@ const api = process.env.API_URL ?? 'http://localhost:3000';
 const app = process.env.APP_URL ?? 'http://localhost:5173';
 const release = 'bettergov-gaa-coverage-2026-11-07';
 const widths = (process.env.WIDTHS ?? '1280,375').split(',').map((value) => Number(value.trim()));
+const composeFile = resolve(dirname(fileURLToPath(import.meta.url)), '../..', 'docker-compose.yml');
 
-const sessionCookie = process.env.AUDIT_SESSION ? `saysight_session=${process.env.AUDIT_SESSION}` : '';
+// Mail is log-only by decision: request a link, read it from the API logs, then
+// exchange it for a session cookie. AUDIT_SESSION bypasses this whole flow.
+export async function obtainSession(email = `a11y-${Date.now()}@example.org`) {
+  // A fixed address (the maintainer) has a 60-second link cooldown, so a rerun
+  // can find an already-consumed link in the logs. Retry rather than failing the
+  // whole audit; unique addresses succeed on the first round.
+  for (let round = 0; round < 8; round++) {
+    const requested = await fetch(`${api}/api/v1/auth/magic-link`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (!requested.ok) throw new Error(`magic-link request for ${email} failed: ${requested.status}`);
 
-async function createFixture() {
+    const marker = `magic link for ${email}: `;
+    let link;
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const logs = execFileSync('docker', ['compose', '-f', composeFile, 'logs', 'api', '--since', '2m'], { encoding: 'utf8', timeout: 2000 });
+      const line = logs.split('\n').reverse().find((entry) => entry.includes(marker));
+      if (line) {
+        link = line.slice(line.indexOf(marker) + marker.length).trim();
+        break;
+      }
+      await new Promise((done) => setTimeout(done, 1000));
+    }
+    if (!link) throw new Error(`no magic link for ${email} appeared in the API logs within 15s`);
+
+    const verified = await fetch(link, { headers: { accept: 'application/json' } });
+    if (verified.ok) {
+      const value = (verified.headers.get('set-cookie') ?? '').match(/(?:^|;)\s*saysight_session=([^;]+)/)?.[1];
+      if (!value) throw new Error('magic-link response had no saysight_session cookie');
+      return decodeURIComponent(value);
+    }
+    if (verified.status !== 401) throw new Error(`magic-link verification failed: ${verified.status}`);
+    // The newest logged link was already consumed; wait out the cooldown.
+    await new Promise((done) => setTimeout(done, 10_000));
+  }
+  throw new Error(`could not obtain a fresh magic-link session for ${email}`);
+}
+
+async function createFixture(sessionCookie) {
   const analysis = await fetch(`${api}/api/v1/analyze`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -32,45 +70,48 @@ async function createFixture() {
   const { evidence_id: evidenceId } = await analysis.json();
   const finding = await fetch(`${api}/api/v1/findings`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    headers: { 'content-type': 'application/json', ...(sessionCookie ? { cookie: sessionCookie } : {}) },
+    headers: { 'content-type': 'application/json', cookie: sessionCookie },
     body: JSON.stringify({ evidence_id: evidenceId }),
   });
-  if (finding.status === 401) throw new Error('finding for the audit failed: 401 — set AUDIT_SESSION to a saysight_session cookie value (see the header comment)');
   if (!finding.ok) throw new Error(`finding for the audit failed: ${finding.status}`);
   const { id } = await finding.json();
   return `${api}/api/v1/findings/${id}/page`;
 }
 
-const browser = await chromium.launch({
-  ...(process.env.BROWSER_PATH ? { executablePath: process.env.BROWSER_PATH } : {}),
-  args: ['--no-sandbox'],
-});
-const findingPage = await createFixture();
-const results = [];
+async function runAudit() {
+  const session = process.env.AUDIT_SESSION ?? await obtainSession();
+  const browser = await chromium.launch({
+    ...(process.env.BROWSER_PATH ? { executablePath: process.env.BROWSER_PATH } : {}),
+    args: ['--no-sandbox'],
+  });
+  const findingPage = await createFixture(`saysight_session=${session}`);
+  const results = [];
 
-for (const width of widths) {
-  for (const [name, url] of [['catalog/analysis', app], ['public finding', findingPage]]) {
-    const context = await browser.newContext({ viewport: { width, height: 900 } });
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: 'networkidle' });
-    await page.evaluate(() => document.querySelectorAll('details').forEach((node) => (node.open = true)));
-    const { violations } = await new AxeBuilder({ page })
-      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
-      .analyze();
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    results.push({ name, width, violations: violations.map((item) => `${item.id} (${item.nodes.length})`), overflow });
-    await context.close();
+  for (const width of widths) {
+    for (const [name, url] of [['catalog/analysis', app], ['public finding', findingPage]]) {
+      const context = await browser.newContext({ viewport: { width, height: 900 } });
+      const page = await context.newPage();
+      await page.goto(url, { waitUntil: 'networkidle' });
+      await page.evaluate(() => document.querySelectorAll('details').forEach((node) => (node.open = true)));
+      const { violations } = await new AxeBuilder({ page })
+        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+        .analyze();
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      results.push({ name, width, violations: violations.map((item) => `${item.id} (${item.nodes.length})`), overflow });
+      await context.close();
+    }
   }
+
+  await browser.close();
+
+  for (const result of results) {
+    const found = result.violations.length ? ` -> ${result.violations.join(', ')}` : '';
+    console.log(`${result.name} @${result.width}px  violations=${result.violations.length}${found}  horizontalOverflow=${result.overflow}px`);
+  }
+
+  const failures = results.filter((result) => result.violations.length > 0 || result.overflow > 0);
+  console.log(failures.length === 0 ? 'AXE_OK' : 'AXE_FAILED');
+  process.exit(failures.length === 0 ? 0 : 1);
 }
 
-await browser.close();
-
-for (const result of results) {
-  const found = result.violations.length ? ` -> ${result.violations.join(', ')}` : '';
-  console.log(`${result.name} @${result.width}px  violations=${result.violations.length}${found}  horizontalOverflow=${result.overflow}px`);
-}
-
-const failures = results.filter((result) => result.violations.length > 0 || result.overflow > 0);
-console.log(failures.length === 0 ? 'AXE_OK' : 'AXE_FAILED');
-process.exit(failures.length === 0 ? 0 : 1);
+if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) await runAudit();

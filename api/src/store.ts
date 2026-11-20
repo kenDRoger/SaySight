@@ -122,6 +122,42 @@ export async function getFinding(id: string): Promise<Finding | undefined> {
   return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
 }
 
+export type FindingTransition = { id: string; findingId: string; fromStatus: string; toStatus: string; actorId: string; reason: string; createdAt: string };
+
+export async function recordTransition(input: { findingId: string; fromStatus: string; toStatus: string; actorId: string; reason: string }): Promise<FindingTransition> {
+  const transition: FindingTransition = { id: randomUUID(), ...input, createdAt: new Date().toISOString() };
+  if (!pool) throw new Error('database_required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('INSERT INTO finding_transitions (id, finding_id, from_status, to_status, actor_id, reason) VALUES ($1, $2, $3, $4, $5, $6)',
+      [transition.id, transition.findingId, transition.fromStatus, transition.toStatus, transition.actorId, transition.reason]);
+    await client.query('UPDATE findings SET status = $2 WHERE id = $1', [transition.findingId, transition.toStatus]);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  return transition;
+}
+
+export async function listTransitions(findingId: string): Promise<FindingTransition[]> {
+  if (!pool) return [];
+  const result = await pool.query('SELECT id, finding_id, from_status, to_status, actor_id, reason, created_at FROM finding_transitions WHERE finding_id = $1 ORDER BY created_at', [findingId]);
+  return result.rows.map((row) => ({ id: row.id, findingId: row.finding_id, fromStatus: row.from_status, toStatus: row.to_status, actorId: row.actor_id, reason: row.reason, createdAt: row.created_at.toISOString() }));
+}
+
+// The queue is what a reviewer can act on now: findings waiting for review, oldest
+// first, with the author so self-review can be refused.
+export async function listReviewQueue(statuses: string[]): Promise<Array<Finding & { authorRole: string | null; authorEmail: string | null }>> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT f.id, f.analysis_run_id, f.status, f.submitted_by, f.created_at, u.role AS author_role, u.email AS author_email
+     FROM findings f LEFT JOIN users u ON u.id = f.submitted_by
+     WHERE f.status = ANY($1) ORDER BY f.created_at`,
+    [statuses],
+  );
+  return result.rows.map((row) => ({ id: row.id, evidenceId: row.analysis_run_id, status: row.status, submittedBy: row.submitted_by,
+    createdAt: row.created_at.toISOString(), authorRole: row.author_role ?? null, authorEmail: row.author_email ?? null }));
+}
+
 export async function getEvidence(id: string): Promise<Evidence | undefined> {
   if (memory.has(id)) return memory.get(id);
   if (!pool) return undefined;

@@ -3,7 +3,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createFinding, getCatalogReleases, getEvidence, getFinding, getNormalizedCoverage, listDraftReleases, pool, registerDraftRelease, saveEvidence, saveNormalizedCoverage } from './store.js';
+import { createFinding, getCatalogReleases, getEvidence, getFinding, getNormalizedCoverage, listDraftReleases, listReviewQueue, listTransitions, pool, recordTransition, registerDraftRelease, saveEvidence, saveNormalizedCoverage } from './store.js';
+import { checkTransition, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
 import { createPgAuthStore } from './authpg.js';
 
@@ -140,6 +141,51 @@ const server = createServer((request, response) => {
       response.writeHead(204, { 'set-cookie': clearSessionCookie(cookieSecure) });
       response.end();
     }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'GET' && request.url === '/api/v1/review/queue') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    auth.session(requestSessionToken(request)).then(async (user) => {
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'reviewer' && user.role !== 'maintainer') { json(response, 403, { error: 'reviewer_required' }); return; }
+      // A reviewer's own submissions are excluded rather than shown and refused.
+      const queue = await listReviewQueue([...reviewQueueStatuses]);
+      json(response, 200, { findings: queue.filter((finding) => finding.submittedBy !== user.id) });
+    }).catch(() => json(response, 503, { error: 'review_queue_unavailable' }));
+    return;
+  }
+
+  const decisionMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/decisions$/) : undefined;
+  if (decisionMatch) {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      let payload: { status?: unknown; reason?: unknown };
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      if (!isStatus(payload.status)) { json(response, 400, { error: 'invalid_status' }); return; }
+      const reason = validateReason(payload.reason);
+      if ('error' in reason) { json(response, 400, { error: reason.error }); return; }
+      const finding = await getFinding(decisionMatch[1]);
+      if (!finding) { json(response, 404, { error: 'finding_not_found' }); return; }
+      const check = checkTransition({ from: finding.status, to: payload.status, role: user.role, actorId: user.id, submittedBy: finding.submittedBy });
+      if (!check.ok) {
+        if (check.error === 'reviewer_required' || check.error === 'self_review_not_allowed') { json(response, 403, { error: check.error }); return; }
+        json(response, 409, { error: check.error, ...('allowed' in check ? { allowed: check.allowed } : {}), current_status: finding.status });
+        return;
+      }
+      const transition = await recordTransition({ findingId: finding.id, fromStatus: finding.status, toStatus: payload.status, actorId: user.id, reason: reason.reason });
+      json(response, 200, { finding: { ...finding, status: payload.status }, transition });
+    }).catch(() => json(response, 503, { error: 'review_unavailable' }));
+    return;
+  }
+
+  const historyMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/history$/) : undefined;
+  if (historyMatch) {
+    listTransitions(historyMatch[1]).then((transitions) => json(response, 200, { transitions })).catch(() => json(response, 503, { error: 'review_history_unavailable' }));
     return;
   }
 
@@ -319,10 +365,11 @@ const server = createServer((request, response) => {
     getFinding(findingPageMatch[1]).then(async (finding) => {
       if (!finding) { response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); response.end('Finding not found'); return; }
       const evidence = await getEvidence(finding.evidenceId);
+      const transitions = await listTransitions(finding.id).catch(() => []);
       const dataset = catalog.find((item) => item.id === evidence?.datasetReleaseId);
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       const details = evidence ? `<section aria-labelledby="evidence-heading"><h2 id="evidence-heading">Evidence</h2><dl><dt>Dataset</dt><dd>${escapeHtml(dataset?.name ?? evidence.datasetReleaseId)}</dd><dt>Source</dt><dd>${dataset ? `<a href="${escapeHtml(dataset.sourceUrl)}">${escapeHtml(dataset.sourceUrl)}</a>` : escapeHtml(evidence.datasetReleaseId)}</dd><dt>Release</dt><dd><code>${escapeHtml(evidence.datasetReleaseId)}</code></dd><dt>SHA-256</dt><dd><code>${escapeHtml(evidence.releaseChecksum)}</code></dd><dt>Recipe</dt><dd>${escapeHtml(evidence.recipe)} v${escapeHtml(evidence.recipeVersion)}</dd><dt>Calculation</dt><dd>${escapeHtml(evidence.calculation)}</dd><dt>Filters</dt><dd><pre>${escapeHtml(JSON.stringify(evidence.filters, null, 2))}</pre></dd><dt>Rows</dt><dd>${evidence.inputRows} input, ${evidence.outputRows} output</dd><dt>Reproducibility</dt><dd>${escapeHtml(evidence.reproducibilityStatus)}</dd><dt>Validation</dt><dd><pre>${escapeHtml(JSON.stringify(evidence.validation, null, 2))}</pre></dd></dl><h3>Result</h3><pre>${escapeHtml(JSON.stringify(evidence.result, null, 2))}</pre><h3>Warnings</h3><ul>${evidence.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul><h3>Limitations</h3><ul>${evidence.limitations.map((limitation) => `<li>${escapeHtml(limitation)}</li>`).join('')}</ul></section>` : '<p>Evidence unavailable.</p>';
-      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong></p><p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}</main></body></html>`);
+      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong></p>${transitions.length ? `<section aria-labelledby="history-heading"><h2 id="history-heading">Review history</h2><ol>${transitions.map((transition) => `<li><strong>${escapeHtml(transition.toStatus)}</strong> — ${escapeHtml(transition.reason)} <small>(${escapeHtml(transition.createdAt)})</small></li>`).join('')}</ol></section>` : ''}<p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}</main></body></html>`);
     }).catch(() => { response.writeHead(503); response.end('Finding page unavailable'); });
     return;
   }

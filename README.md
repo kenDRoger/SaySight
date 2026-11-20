@@ -60,6 +60,24 @@ HTTPS). `GET /api/v1/auth/me` reports the signed-in account, and
 without it the auth endpoints answer `503 accounts_unavailable` rather than
 keeping sessions in memory.
 
+## Review workflow
+
+Findings move through `Unverified` → `Pending verification` → `In review` →
+`Verified`, `Needs correction`, `Rejected`, or `Insufficient evidence`. Terminal
+statuses accept no further change; `Needs correction` sends the finding back to
+`Pending verification`.
+
+- `GET /api/v1/review/queue` — reviewer or maintainer only; excludes your own
+  submissions.
+- `POST /api/v1/findings/:id/decisions` — `{ "status": "In review", "reason": "..." }`;
+  the reason is mandatory and recorded.
+- `GET /api/v1/findings/:id/history` — the append-only decision history, also
+  rendered on the public finding page.
+
+Nobody reviews their own submission, whatever their role, and a submitter cannot
+decide anything. `finding_transitions` rejects `UPDATE`, `DELETE`, and `TRUNCATE`,
+so history cannot be rewritten.
+
 ## Accessibility audit
 
 With the stack running:

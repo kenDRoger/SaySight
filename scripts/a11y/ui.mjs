@@ -49,6 +49,22 @@ try {
   assert.ok(signedInText?.includes(`Signed in as ${maintainerEmail} (maintainer)`), `signed-in line: ${signedInText}`);
   console.log(`OK signed-in line shows ${maintainerEmail} (maintainer)`);
 
+  const viewName = `a11y-view-${randomUUID()}`;
+  await ok('/api/v1/saved-views', maintainerSession, {
+    method: 'POST',
+    body: JSON.stringify({ name: viewName, datasetReleaseId: 'bettergov-gaa-coverage-2026-11-07', filters: { year: 2024 } }),
+  });
+  await maintainerPage.reload({ timeout });
+  const catalog = maintainerPage.getByRole('region', { name: 'Dataset catalog' });
+  await catalog.getByText('Philippine General Appropriations Act coverage, FY2000–FY2026').first().waitFor();
+  assert.ok((await catalog.textContent()).includes('current'), 'catalog freshness status is missing');
+  console.log('OK catalog shows the release with agency and freshness metadata');
+  const views = maintainerPage.getByRole('region', { name: 'Saved views' });
+  await views.getByText(viewName).waitFor();
+  console.log('OK signed-in user sees their saved view');
+  await maintainerPage.getByRole('region', { name: 'Upload a dataset draft' }).waitFor();
+  console.log('OK dataset upload section is available');
+
   const analysis = await ok('/api/v1/analyze', undefined, { method: 'POST', body: JSON.stringify({ datasetReleaseId: release, recipe: 'summary' }) });
   const finding = await ok('/api/v1/findings', submitterSession, { method: 'POST', body: JSON.stringify({ evidence_id: analysis.evidence_id }) });
   assert.ok(finding.id, `finding response: ${JSON.stringify(finding)}`);

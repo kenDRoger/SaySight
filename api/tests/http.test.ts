@@ -673,3 +673,32 @@ test('a maintainer publishes a validated draft as a new release', async (t) => {
   const catalog = await responseJson<{ datasets: Array<{ name: string }> }>(await api('/api/v1/datasets'));
   assert.ok(catalog.datasets.some((dataset) => dataset.name === name), 'published release is in the catalog');
 });
+
+// Multi-agency catalog and saved views (MVP-C).
+
+test('the catalog exposes agencies and verified freshness metadata', async (t) => {
+  if (!ready(t)) return;
+  const agencies = await responseJson<{ agencies: Array<{ id: string }> }>(await api('/api/v1/agencies'));
+  assert.ok(agencies.agencies.some((agency) => agency.id === 'bettergov'));
+  const catalog = await responseJson<{ datasets: Array<{ id: string; agencyId: string | null; freshnessStatus: string }> }>(await api('/api/v1/datasets'));
+  const verified = catalog.datasets.find((dataset) => dataset.id === 'bettergov-gaa-coverage-2026-11-07');
+  assert.ok(verified);
+  assert.equal(verified.agencyId, 'bettergov');
+  assert.equal(verified.freshnessStatus, 'current');
+});
+
+test('saved views require an owner and stay isolated', async (t) => {
+  if (!ready(t)) return;
+  assert.equal((await api('/api/v1/saved-views')).status, 401);
+  const first = await signIn('view-owner');
+  const second = await signIn('view-other');
+  const created = await api('/api/v1/saved-views', {
+    method: 'POST', cookie: first.cookie,
+    body: { name: 'FY2024', datasetReleaseId: 'bettergov-gaa-coverage-2026-11-07', filters: { year: 2024 } },
+  });
+  assert.equal(created.status, 201, await responseText(created));
+  const mine = await responseJson<{ views: Array<{ name: string }> }>(await api('/api/v1/saved-views', { cookie: first.cookie }));
+  assert.ok(mine.views.some((view) => view.name === 'FY2024'));
+  const theirs = await responseJson<{ views: Array<{ name: string }> }>(await api('/api/v1/saved-views', { cookie: second.cookie }));
+  assert.ok(!theirs.views.some((view) => view.name === 'FY2024'));
+});

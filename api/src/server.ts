@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveNormalizedCoverage } from './store.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
@@ -313,6 +313,38 @@ const server = createServer((request, response) => {
   const historyMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/history$/) : undefined;
   if (historyMatch) {
     listTransitions(historyMatch[1]).then((transitions) => json(response, 200, { transitions })).catch(() => json(response, 503, { error: 'review_history_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'GET' && request.url === '/api/v1/agencies') {
+    listAgencies().then((agencies) => json(response, 200, { agencies })).catch(() => json(response, 503, { error: 'agency_catalog_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'GET' && request.url === '/api/v1/saved-views') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    auth.session(requestSessionToken(request)).then(async (user) => {
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      json(response, 200, { views: await listSavedViews(user.id) });
+    }).catch(() => json(response, 503, { error: 'saved_views_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'POST' && request.url === '/api/v1/saved-views') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      let payload: { name?: unknown; datasetReleaseId?: unknown; filters?: unknown };
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      if (typeof payload.name !== 'string' || !payload.name.trim()) { json(response, 400, { error: 'name_required' }); return; }
+      if (typeof payload.datasetReleaseId !== 'string') { json(response, 400, { error: 'dataset_release_id_required' }); return; }
+      if (!payload.filters || typeof payload.filters !== 'object' || Array.isArray(payload.filters)) { json(response, 400, { error: 'filters_required' }); return; }
+      const view = await createSavedView({ userId: user.id, name: payload.name.trim(), datasetReleaseId: payload.datasetReleaseId, filters: payload.filters as Record<string, unknown> });
+      json(response, 201, view);
+    }).catch(() => json(response, 503, { error: 'saved_views_unavailable' }));
     return;
   }
 

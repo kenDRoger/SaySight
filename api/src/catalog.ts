@@ -12,6 +12,12 @@ export interface DatasetRelease {
   reuseTerms: string;
   status: DatasetStatus;
   limitations: string[];
+  agencyId?: string | null;
+  region?: string | null;
+  lastCheckedAt?: string | null;
+  sourcePublishedAt?: string | null;
+  sourceUpdatedAt?: string | null;
+  freshnessStatus?: string;
 }
 
 // MVP-A starts with a verified contract-shaped catalog record. The live BetterGov
@@ -37,6 +43,13 @@ export const catalog: DatasetRelease[] = [
     ],
     reuseTerms: 'CC0 1.0 Universal',
     status: 'current',
+    agencyId: 'bettergov',
+    region: 'Philippines',
+    // Derived from the verified release id; no unpublished source date is invented.
+    lastCheckedAt: '2026-11-07T00:00:00.000Z',
+    sourcePublishedAt: null,
+    sourceUpdatedAt: null,
+    freshnessStatus: 'current',
     limitations: [
       'Coverage varies by year; 2001, 2004, and 2006 have no rows because the prior year GAA was reenacted.',
       'The coverage table must be read before comparing years; amounts are appropriations, not obligations, releases, or spending.',

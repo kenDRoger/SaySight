@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Pool } from 'pg';
-import type { DatasetRelease } from './catalog.js';
+import { catalog, type DatasetRelease } from './catalog.js';
 
 export type Evidence = {
   id: string;
@@ -123,10 +123,41 @@ export type NormalizedCoverage = { year: number; status: string; rows: number; a
 
 export async function getCatalogReleases(): Promise<DatasetRelease[] | undefined> {
   if (!pool) return undefined;
-  const result = await pool.query('SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata FROM dataset_releases ORDER BY name');
-  return result.rows.map((row) => ({ id: row.id, name: row.name, publisher: row.publisher, sourceUrl: row.source_url,
+  const result = await pool.query('SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, agency_id, region, last_checked_at, source_published_at, source_updated_at, freshness_status FROM dataset_releases ORDER BY name');
+  return result.rows.map((row) => {
+    const verified = catalog.find((item) => item.id === row.id);
+    return { id: row.id, name: row.name, publisher: row.publisher, sourceUrl: row.source_url,
     releaseId: row.release_id, checksum: row.checksum, reuseTerms: row.reuse_terms, status: row.status,
-    coverage: row.metadata.coverage, fields: row.metadata.fields, limitations: row.metadata.limitations }));
+    coverage: row.metadata.coverage, fields: row.metadata.fields, limitations: row.metadata.limitations,
+    agencyId: row.agency_id || row.metadata.agencyId || verified?.agencyId || null,
+    region: row.region || row.metadata.region || verified?.region || null,
+    lastCheckedAt: (row.last_checked_at ?? row.metadata.lastCheckedAt)?.toISOString?.() ?? row.metadata.lastCheckedAt ?? verified?.lastCheckedAt ?? null,
+    sourcePublishedAt: (row.source_published_at ?? row.metadata.sourcePublishedAt)?.toISOString?.() ?? row.metadata.sourcePublishedAt ?? verified?.sourcePublishedAt ?? null,
+    sourceUpdatedAt: (row.source_updated_at ?? row.metadata.sourceUpdatedAt)?.toISOString?.() ?? row.metadata.sourceUpdatedAt ?? verified?.sourceUpdatedAt ?? null,
+    freshnessStatus: (row.freshness_status !== 'unknown' && row.freshness_status) || row.metadata.freshnessStatus || verified?.freshnessStatus || 'unknown' };
+  });
+}
+
+export async function listAgencies(): Promise<Array<{ id: string; name: string; website: string }>> {
+  if (!pool) return [{ id: 'bettergov', name: 'BetterGovPH', website: 'https://data.bettergov.ph' }];
+  const result = await pool.query('SELECT id, name, website FROM agencies ORDER BY name');
+  return result.rows;
+}
+
+export type SavedView = { id: string; name: string; datasetReleaseId: string; filters: Record<string, unknown>; createdAt: string };
+
+export async function listSavedViews(userId: string): Promise<SavedView[]> {
+  if (!pool) return [];
+  const result = await pool.query('SELECT id, name, dataset_release_id, filters, created_at FROM saved_views WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
+  return result.rows.map((row) => ({ id: row.id, name: row.name, datasetReleaseId: row.dataset_release_id, filters: row.filters, createdAt: row.created_at.toISOString() }));
+}
+
+export async function createSavedView(input: { userId: string; name: string; datasetReleaseId: string; filters: Record<string, unknown> }): Promise<SavedView> {
+  if (!pool) throw new Error('database_required');
+  const view: SavedView = { id: randomUUID(), name: input.name, datasetReleaseId: input.datasetReleaseId, filters: input.filters, createdAt: new Date().toISOString() };
+  await pool.query('INSERT INTO saved_views (id, user_id, name, dataset_release_id, filters) VALUES ($1, $2, $3, $4, $5)',
+    [view.id, input.userId, view.name, view.datasetReleaseId, JSON.stringify(view.filters)]);
+  return view;
 }
 
 export async function getNormalizedCoverage(releaseId: string): Promise<NormalizedCoverage[] | undefined> {

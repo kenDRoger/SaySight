@@ -150,6 +150,24 @@ normalization, and records a validation report for every draft.
   the append-only `publication_decisions` log; the draft becomes `published`.
   General uploads are never normalized or published automatically.
 
+## Catalog metadata and saved views
+
+`GET /api/v1/agencies` lists the seeded agencies. Each catalog entry now carries
+its agency, region, freshness status, and last-checked date; the verified
+BetterGov release uses its checksum-verified catalog record when a legacy row
+does not yet have those columns.
+
+Signed-in users can save a filtered view:
+
+```sh
+curl -b cookies.txt -X POST localhost:3000/api/v1/saved-views \
+  -H 'content-type: application/json' \
+  -d '{"name":"FY2024","datasetReleaseId":"bettergov-gaa-coverage-2026-11-07","filters":{"year":2024}}'
+```
+
+`GET /api/v1/saved-views` returns only the caller's views. Saved views are
+workflow state, not evidence.
+
 ## Accessibility audit
 
 With the stack running:

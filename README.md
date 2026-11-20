@@ -195,3 +195,10 @@ It checks the catalog/analysis page and a public finding page at 1280px and 375p
 The audit signs itself in through the magic-link flow and reads the link from the API log, so no cookie needs to be pasted. Set `AUDIT_SESSION` only to skip that flow. `npm run ui` runs the browser interaction checks (reviewer gating, comment moderation, explanation provenance) against the same stack.
 
 The first release is a frozen, checksum-verified source snapshot. Scheduled source refresh and publication of general user uploads are later staged work; see `mvp.md`.
+
+## Documentation boundaries
+
+`mvp.md`, `architecture.md`, `concept.md`, `ideas.md`, and `guidelines.md` are the
+owner's source-of-truth documents and are intentionally kept outside this
+repository. This README is the repository-facing operating guide; there is no
+`docs/` tree because the owner keeps a separate backup of design documents.

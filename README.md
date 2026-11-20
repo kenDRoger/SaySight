@@ -197,6 +197,20 @@ The audit signs itself in through the magic-link flow and reads the link from th
 
 The first release is a frozen, checksum-verified source snapshot. Scheduled source refresh and publication of general user uploads are later staged work; see `mvp.md`.
 
+## Curated join
+
+`POST /api/v1/join/analyze` runs one curated join of the verified BetterGov GAA
+coverage release with a **synthetic test fixture** on the explicit
+`fiscal_year` key. The fixture is labeled as test data in the catalog and is not
+a real government dataset. Join keys are declared in the relationship record;
+the API accepts no SQL and no alternative release pair.
+
+The response reports matched and unmatched rows, duplicate right-side keys,
+validation, and reproducibility. The worker runs the recipe twice and the API
+writes one append-only `joined_evidence` row tied to a new analysis run; a new
+release or recipe version creates a new run rather than updating an existing
+one. Evidence exposes counts and the explicit keys, not raw joined rows.
+
 ## Documentation boundaries
 
 `mvp.md`, `architecture.md`, `concept.md`, `ideas.md`, and `guidelines.md` are the

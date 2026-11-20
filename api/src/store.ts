@@ -238,6 +238,56 @@ export async function saveEvidence(input: Omit<Evidence, 'id' | 'createdAt'>): P
   return evidence;
 }
 
+export type Relationship = { id: string; primaryReleaseId: string; relatedReleaseId: string; joinKeys: string[]; status: 'draft' | 'validated' | 'retired' };
+
+export async function getRelationship(id: string): Promise<Relationship | undefined> {
+  if (!pool) return undefined;
+  const result = await pool.query('SELECT id, primary_release_id, related_release_id, join_keys, status FROM dataset_relationships WHERE id = $1', [id]);
+  const row = result.rows[0];
+  return row ? { id: row.id, primaryReleaseId: row.primary_release_id, relatedReleaseId: row.related_release_id,
+    joinKeys: row.join_keys as string[], status: row.status } : undefined;
+}
+
+export async function getJoinRows(releaseId: string): Promise<Array<{ fiscal_year: number; coverage_status: string; source_row_count: number }>> {
+  if (!pool) return [];
+  const result = await pool.query(
+    'SELECT fiscal_year, coverage_status, source_row_count FROM coverage_records WHERE dataset_release_id = $1 ORDER BY fiscal_year',
+    [releaseId],
+  );
+  return result.rows.map((row) => ({ fiscal_year: row.fiscal_year, coverage_status: row.coverage_status, source_row_count: row.source_row_count }));
+}
+
+// Evidence and its joined diagnostics are written in one transaction so a
+// successful analysis run can never exist without its joined record.
+export async function saveJoinedRun(input: {
+  relationshipId: string;
+  evidence: Omit<Evidence, 'id' | 'createdAt'>;
+  diagnostics: unknown;
+  result: unknown;
+}): Promise<Evidence> {
+  const evidence: Evidence = { ...input.evidence, id: randomUUID(), createdAt: new Date().toISOString() };
+  if (!pool) throw new Error('database_required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO analysis_runs (id, dataset_release_id, recipe, recipe_version, filters, result, validation, reproducibility_status, input_rows, output_rows, release_checksum, calculation)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [evidence.id, evidence.datasetReleaseId, evidence.recipe, evidence.recipeVersion, JSON.stringify(evidence.filters), JSON.stringify(evidence.result),
+        JSON.stringify({ validation: evidence.validation, warnings: evidence.warnings, limitations: evidence.limitations }), evidence.reproducibilityStatus,
+        evidence.inputRows, evidence.outputRows, evidence.releaseChecksum, evidence.calculation],
+    );
+    await client.query(
+      `INSERT INTO joined_evidence (id, relationship_id, analysis_run_id, recipe_version, filters, diagnostics, result)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [randomUUID(), input.relationshipId, evidence.id, evidence.recipeVersion, JSON.stringify(evidence.filters),
+        JSON.stringify(input.diagnostics), JSON.stringify(input.result)],
+    );
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  return evidence;
+}
+
 export async function createFinding(evidenceId: string, submittedBy: string, impact: string): Promise<Finding> {
   const finding: Finding = { id: randomUUID(), evidenceId, status: 'Unverified', impact, submittedBy, createdAt: new Date().toISOString() };
   // Only the database-less development fallback keeps findings in memory; with a

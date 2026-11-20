@@ -3,11 +3,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
 import { validateMetadata, type PublicationMetadata } from './metadata.js';
+import { joinLimitations, planJoin, type Relationship } from './join.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { checkImpactGate, conflictRecord, deriveImpact, isImpact, type Impact } from './impact.js';
 import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
@@ -536,6 +537,57 @@ const server = createServer((request, response) => {
       const imported = await saveNormalizedCoverage(rows, catalog[0]);
       json(response, 200, { dataset_release_id: 'bettergov-gaa-coverage-2026-11-07', imported_rows: imported, status: 'validated' });
     }).catch((error) => { console.error(error); json(response, 503, { error: 'normalized_import_unavailable' }); });
+    return;
+  }
+
+  if (request.method === 'POST' && request.url === '/api/v1/join/analyze') {
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      let payload: { relationship_id?: unknown };
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const relationshipId = typeof payload.relationship_id === 'string' ? payload.relationship_id : '11111111-2222-3333-4444-555555555555';
+      const relationship = await getRelationship(relationshipId);
+      if (!relationship) { json(response, 404, { error: 'relationship_not_found' }); return; }
+      const planned = planJoin({ relationship: relationship as Relationship,
+        primaryReleaseId: relationship.primaryReleaseId, relatedReleaseId: relationship.relatedReleaseId });
+      if (!planned.ok) { json(response, 409, { error: planned.error }); return; }
+      const [leftRows, rightRows] = await Promise.all([getJoinRows(relationship.primaryReleaseId), getJoinRows(relationship.relatedReleaseId)]);
+      const workerBody = { recipe: 'joined_summary', keys: planned.plan.joinKeys, left_rows: leftRows, right_rows: rightRows };
+      const callWorker = () => workerFetch(`${workerUrl}/analyze-join`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(workerBody),
+      });
+      const firstResponse = await callWorker();
+      const firstText = await firstResponse.text();
+      if (!firstResponse.ok) { response.writeHead(firstResponse.status, { 'content-type': 'application/json; charset=utf-8' }); response.end(firstText); return; }
+      const first = JSON.parse(firstText) as { result?: unknown; validation?: { status?: string; checks?: string[] }; warnings?: string[]; limitations?: string[]; recipe_version?: string };
+      const replayResponse = await callWorker();
+      if (!replayResponse.ok) { json(response, 503, { error: 'reproducibility_rerun_unavailable', reproducibility_status: 'Not run' }); return; }
+      const replay = (await replayResponse.json()) as unknown;
+      if (!isDeepStrictEqual(first, replay)) { json(response, 422, { error: 'reproducibility_mismatch', reproducibility_status: 'Failed' }); return; }
+      const result = first.result ?? {};
+      const matched = (result as { matched_rows?: number }).matched_rows ?? 0;
+      const evidence = await saveJoinedRun({
+        relationshipId: relationship.id,
+        evidence: {
+          datasetReleaseId: relationship.primaryReleaseId,
+          recipe: 'joined_summary',
+          recipeVersion: String(first.recipe_version ?? 'joined-v1'),
+          filters: { relationship_id: relationship.id, related_release_id: relationship.relatedReleaseId, join_keys: planned.plan.joinKeys },
+          result, inputRows: leftRows.length + rightRows.length, outputRows: matched,
+          releaseChecksum: catalog[0].checksum,
+          calculation: 'Equi-join on curated explicit keys with unmatched and duplicate-key diagnostics.',
+          validation: { status: first.validation?.status ?? 'Not run', checks: [...(first.validation?.checks ?? []), 'deterministic rerun matched'] },
+          warnings: [...(first.warnings ?? [])], limitations: [...(first.limitations ?? []), ...joinLimitations],
+          reproducibilityStatus: 'Passed',
+        },
+        diagnostics: result,
+        result,
+      });
+      json(response, 200, { ...result, evidence_id: evidence.id, analysis_run_id: evidence.id,
+        relationship_id: relationship.id, reproducibility_status: 'Passed', validation: first.validation,
+        warnings: first.warnings, limitations: first.limitations });
+    }).catch(() => json(response, 503, { error: 'joined_analysis_unavailable' }));
     return;
   }
 

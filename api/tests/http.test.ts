@@ -757,3 +757,27 @@ test('a saved view cannot reference an unknown release', async (t) => {
   assert.equal(response.status, 404);
   assert.deepEqual(await responseJson<unknown>(response), { error: 'dataset_release_not_found' });
 });
+
+// Curated join analysis (MVP-D).
+
+test('the curated join runs twice and records joined evidence', async (t) => {
+  if (!ready(t)) return;
+  const response = await api('/api/v1/join/analyze', { method: 'POST', body: {} });
+  const text = await responseText(response);
+  assert.equal(response.status, 200, text);
+  const joined = JSON.parse(text) as { matched_rows: number; evidence_id: string; reproducibility_status: string; relationship_id: string };
+  assert.equal(joined.matched_rows, 27);
+  assert.ok(joined.evidence_id);
+  assert.equal(joined.reproducibility_status, 'Passed');
+  const evidence = await responseJson<{ recipe: string }>(await api(`/api/v1/evidence/${joined.evidence_id}`));
+  assert.equal(evidence.recipe, 'joined_summary');
+});
+
+test('an unknown relationship is refused', async (t) => {
+  if (!ready(t)) return;
+  const response = await api('/api/v1/join/analyze', {
+    method: 'POST', body: { relationship_id: '00000000-0000-0000-0000-000000000000' },
+  });
+  assert.equal(response.status, 404);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'relationship_not_found' });
+});

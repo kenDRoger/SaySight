@@ -132,4 +132,6 @@ cd scripts/a11y && npm install && npm run audit
 
 It checks the catalog/analysis page and a public finding page at 1280px and 375px, fails on any axe violation or horizontal overflow, and uses Playwright's Chromium unless `BROWSER_PATH` names an installed browser. Set `APP_URL`, `API_URL`, or `WIDTHS` to override the defaults.
 
+Submitting the audit's finding needs an account, so pass `AUDIT_SESSION` (the value of the `saysight_session` cookie, obtainable by completing a magic-link sign-in as described above); without it the audit stops at `401` with instructions.
+
 The first release is a frozen, checksum-verified source snapshot. Scheduled source refresh and publication of general user uploads are later staged work; see `mvp.md`.

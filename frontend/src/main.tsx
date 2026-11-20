@@ -65,7 +65,24 @@ function App() {
     <section aria-labelledby="dataset-heading">
       <Card className="card">
       <h2 id="dataset-heading">Dataset catalog</h2>
-      {dataset ? <><h3>{dataset.name}</h3><p>Publisher: {dataset.publisher} · Terms: {dataset.reuseTerms}</p><p><a href={dataset.sourceUrl}>View source metadata</a> · Release: <code>{dataset.releaseId}</code></p><p className="muted">Checksum: <code>{dataset.checksum}</code></p><ul>{dataset.limitations.map((item) => <li key={item}>{item}</li>)}</ul></> : <p>Loading catalog…</p>}
+      {dataset ? <>
+        <h3>{dataset.name}</h3>
+        <p>Publisher: {dataset.publisher} · Terms: {dataset.reuseTerms}</p>
+        <p><a href={dataset.sourceUrl}>View source metadata</a> · Release: <code>{dataset.releaseId}</code></p>
+        <p className="muted">Checksum: <code>{dataset.checksum}</code></p>
+        <ul>{dataset.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+        <details>
+          <summary>Dataset details and fields</summary>
+          <p>Fiscal years covered: {dataset.coverage.fiscalYears[0]}–{dataset.coverage.fiscalYears.at(-1)} ({dataset.coverage.fiscalYears.length} years)</p>
+          <div className="table-scroll" role="region" aria-label="Field definitions" tabIndex={0}>
+          <table>
+            <caption>Field definitions</caption>
+            <thead><tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col">Unit</th><th scope="col">Description</th></tr></thead>
+            <tbody>{dataset.fields.map((field) => <tr key={field.name}><th scope="row">{field.name}</th><td>{field.type}</td><td>{field.unit ?? '—'}</td><td>{field.description}</td></tr>)}</tbody>
+          </table>
+          </div>
+        </details>
+      </> : <p>Loading catalog…</p>}
       </Card>
     </section>
     <section aria-labelledby="analysis-heading">

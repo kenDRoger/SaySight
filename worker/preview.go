@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -13,15 +13,10 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	rows, err := loadVerifiedCoverage(os.Getenv("COVERAGE_PATH"))
+	rows, err := loadReleaseRows()
 	if err != nil {
-		if os.Getenv("COVERAGE_PATH") == "" {
-			rows, err = loadVerifiedCoverage("data/coverage.json")
-		}
-		if err != nil {
-			http.Error(w, "coverage release unavailable", http.StatusServiceUnavailable)
-			return
-		}
+		http.Error(w, "coverage release unavailable", http.StatusServiceUnavailable)
+		return
 	}
 	count := 0
 	yearValue := r.URL.Query().Get("year")
@@ -68,5 +63,7 @@ func previewHandler(w http.ResponseWriter, r *http.Request) {
 		count++
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"matching_rows": count, "source_rows": len(rows), "filters": r.URL.Query()})
+	if encodeErr := json.NewEncoder(w).Encode(map[string]any{"matching_rows": count, "source_rows": len(rows), "filters": r.URL.Query()}); encodeErr != nil {
+		log.Printf("preview response unavailable: %v", encodeErr)
+	}
 }

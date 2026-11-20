@@ -107,10 +107,11 @@ func loadCoverage(path string) ([]coverageRow, error) {
 }
 
 func loadVerifiedCoverage(path string) ([]coverageRow, error) {
-	if err := verifyRelease(path, verifiedCoverageChecksum); err != nil {
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, err
 	}
-	return loadCoverage(path)
+	return decodeVerifiedRelease(data)
 }
 
 func failedAnalysis(request analysisRequest, filters map[string]any, message string) (analysisResponse, error) {

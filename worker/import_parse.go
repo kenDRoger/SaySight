@@ -19,6 +19,17 @@ type importSummary struct {
 }
 
 func parseTabularImport(name string, data []byte) (importSummary, error) {
+	summary, err := parseImportRows(name, data)
+	if err != nil {
+		return importSummary{}, err
+	}
+	if err := checkImportRowLimit(summary.Rows); err != nil {
+		return importSummary{}, err
+	}
+	return summary, nil
+}
+
+func parseImportRows(name string, data []byte) (importSummary, error) {
 	if err := validateImport(name, data); err != nil {
 		return importSummary{}, err
 	}

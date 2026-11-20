@@ -22,7 +22,8 @@ export type Evidence = {
   createdAt: string;
 };
 
-const pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : undefined;
+// Accounts require durable storage, so the pool is shared with the auth layer.
+export const pool: Pool | undefined = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : undefined;
 const memory = new Map<string, Evidence>();
 type Finding = { id: string; evidenceId: string; status: 'Unverified'; createdAt: string };
 const findings = new Map<string, Finding>();

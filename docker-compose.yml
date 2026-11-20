@@ -75,6 +75,11 @@ services:
       PORT: 3000
       DATABASE_URL: postgres://saysight:saysight-dev-only@postgres:5432/saysight
       WORKER_URL: http://worker:8080
+      # The first account to sign in with this address becomes the maintainer.
+      SAYSIGHT_MAINTAINER_EMAIL: ${SAYSIGHT_MAINTAINER_EMAIL:-maintainer@example.org}
+      # Magic links point at the app; the API logs them until a mail transport exists.
+      SAYSIGHT_BASE_URL: ${SAYSIGHT_BASE_URL:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     ports:
       - "3000:3000"
     restart: unless-stopped

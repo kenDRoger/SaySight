@@ -3,7 +3,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createFinding, getCatalogReleases, getEvidence, getFinding, getNormalizedCoverage, listDraftReleases, registerDraftRelease, saveEvidence, saveNormalizedCoverage } from './store.js';
+import { createFinding, getCatalogReleases, getEvidence, getFinding, getNormalizedCoverage, listDraftReleases, pool, registerDraftRelease, saveEvidence, saveNormalizedCoverage } from './store.js';
+import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
+import { createPgAuthStore } from './authpg.js';
 
 const port = Number(process.env.PORT ?? 3000);
 const workerUrl = process.env.WORKER_URL ?? 'http://127.0.0.1:8080';
@@ -60,6 +62,18 @@ function readBoundedBody(request: IncomingMessage, limit: number): Promise<{ dat
 
 const uploads = createGate(maxConcurrentUploads);
 
+// Accounts need PostgreSQL; without it the auth endpoints report themselves as
+// unavailable rather than falling back to a store that forgets sessions.
+const auth = pool
+  ? createAuth(createPgAuthStore(pool), {
+      maintainerEmail: process.env.SAYSIGHT_MAINTAINER_EMAIL,
+      baseUrl: process.env.SAYSIGHT_BASE_URL ?? 'http://localhost:5173',
+      transport: defaultTransport,
+    })
+  : undefined;
+const cookieSecure = process.env.COOKIE_SECURE === 'true';
+const requestSessionToken = (request: IncomingMessage) => readCookie(request.headers.cookie, sessionCookie);
+
 const server = createServer((request, response) => {
 
 
@@ -70,6 +84,62 @@ const server = createServer((request, response) => {
 
   if (request.method === 'GET' && request.url === '/api/v1/datasets') {
     getCatalogReleases().then((releases) => json(response, 200, { datasets: releases?.length ? releases : catalog })).catch(() => json(response, 503, { error: 'catalog_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'POST' && request.url === '/api/v1/auth/magic-link') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      let payload: unknown;
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const email = payload && typeof payload === 'object' && 'email' in payload ? (payload as { email?: unknown }).email : undefined;
+      if (typeof email !== 'string') { json(response, 400, { error: 'email_required' }); return; }
+      try {
+        // The response never reveals whether the address is known.
+        await auth.requestMagicLink(email);
+        json(response, 202, { status: 'pending' });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'invalid_email') { json(response, 400, { error: 'invalid_email' }); return; }
+        json(response, 503, { error: 'accounts_unavailable' });
+      }
+    });
+    return;
+  }
+
+  const verifyMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/auth\/verify\?token=([^&]+)$/) : undefined;
+  if (verifyMatch) {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    auth.verify(decodeURIComponent(verifyMatch[1])).then((result) => {
+      if (!result) { json(response, 401, { error: 'invalid_or_expired_link' }); return; }
+      const cookie = serializeSessionCookie(result.sessionToken, cookieSecure);
+      // Browsers follow the link and land on the app; API clients ask for JSON.
+      if ((request.headers.accept ?? '').includes('application/json')) {
+        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'set-cookie': cookie });
+        response.end(JSON.stringify({ user: { id: result.user.id, email: result.user.email, role: result.user.role } }));
+        return;
+      }
+      response.writeHead(303, { location: '/', 'set-cookie': cookie });
+      response.end();
+    }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'GET' && request.url === '/api/v1/auth/me') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    auth.session(requestSessionToken(request)).then((user) =>
+      user ? json(response, 200, { user: { id: user.id, email: user.email, role: user.role } }) : json(response, 401, { error: 'not_signed_in' }))
+      .catch(() => json(response, 503, { error: 'accounts_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'POST' && request.url === '/api/v1/auth/logout') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    auth.logout(requestSessionToken(request)).then(() => {
+      response.writeHead(204, { 'set-cookie': clearSessionCookie(cookieSecure) });
+      response.end();
+    }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
     return;
   }
 

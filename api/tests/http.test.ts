@@ -724,3 +724,15 @@ test('invalid pagination parameters are refused', async (t) => {
     assert.deepEqual(await responseJson<unknown>(response), { error: 'invalid_pagination' });
   }
 });
+
+test('the public catalog excludes private drafts and always has complete arrays', async (t) => {
+  if (!ready(t)) return;
+  const { datasets } = await responseJson<{ datasets: Array<{ id: string; coverage?: { fiscalYears?: unknown }; fields?: unknown; limitations?: unknown }> }>(await api('/api/v1/datasets'));
+  assert.ok(datasets.length > 0);
+  for (const dataset of datasets) {
+    assert.ok(!dataset.id.startsWith('draft-'), `private draft leaked: ${dataset.id}`);
+    assert.ok(Array.isArray(dataset.coverage?.fiscalYears), `coverage missing: ${dataset.id}`);
+    assert.ok(Array.isArray(dataset.fields), `fields missing: ${dataset.id}`);
+    assert.ok(Array.isArray(dataset.limitations), `limitations missing: ${dataset.id}`);
+  }
+});

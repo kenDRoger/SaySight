@@ -123,12 +123,18 @@ export type NormalizedCoverage = { year: number; status: string; rows: number; a
 
 export async function getCatalogReleases(): Promise<DatasetRelease[] | undefined> {
   if (!pool) return undefined;
-  const result = await pool.query('SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, agency_id, region, last_checked_at, source_published_at, source_updated_at, freshness_status FROM dataset_releases ORDER BY name');
+  // Private drafts are workflow state, not catalog entries.
+  const result = await pool.query(`SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, agency_id, region, last_checked_at, source_published_at, source_updated_at, freshness_status
+     FROM dataset_releases
+     WHERE COALESCE(metadata->>'visibility', '') <> 'private-draft'
+     ORDER BY name`);
   return result.rows.map((row) => {
     const verified = catalog.find((item) => item.id === row.id);
     return { id: row.id, name: row.name, publisher: row.publisher, sourceUrl: row.source_url,
     releaseId: row.release_id, checksum: row.checksum, reuseTerms: row.reuse_terms, status: row.status,
-    coverage: row.metadata.coverage, fields: row.metadata.fields, limitations: row.metadata.limitations,
+    coverage: row.metadata.coverage ?? { fiscalYears: [] },
+    fields: row.metadata.fields ?? [],
+    limitations: row.metadata.limitations ?? [],
     agencyId: row.agency_id || row.metadata.agencyId || verified?.agencyId || null,
     region: row.region || row.metadata.region || verified?.region || null,
     lastCheckedAt: (row.last_checked_at ?? row.metadata.lastCheckedAt)?.toISOString?.() ?? row.metadata.lastCheckedAt ?? verified?.lastCheckedAt ?? null,

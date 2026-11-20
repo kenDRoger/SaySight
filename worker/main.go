@@ -47,6 +47,7 @@ func newMux() *http.ServeMux {
 	mux.HandleFunc("/preview", previewHandler)
 	mux.HandleFunc("/records", recordsHandler)
 	mux.HandleFunc("/validate-import", jobs.wrap(importValidationHandler))
+	mux.HandleFunc("/normalize-import", jobs.wrap(importRowsHandler))
 	mux.HandleFunc("/analyze", jobs.wrap(analyzeHandler))
 	return mux
 }

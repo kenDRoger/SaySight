@@ -148,7 +148,8 @@ normalization, and records a validation report for every draft.
   Incomplete metadata is refused with `400 invalid_metadata` and the failing
   field names. Publication creates a **new** release and records the decision in
   the append-only `publication_decisions` log; the draft becomes `published`.
-  General uploads are never normalized or published automatically.
+  A validated, non-quarantined draft is normalized into `import_rows`, one JSONB
+  row per source row, through the worker's bounded `/normalize-import` endpoint.
 
 ## Catalog metadata and saved views
 

@@ -78,6 +78,22 @@ export async function registerDraftRelease(name: string, filename: string, data:
 }
 
 export function listDraftReleases() { return [...draftReleases.values()]; }
+export async function saveImportRows(publicId: string, offset: number, rows: Array<Record<string, unknown>>): Promise<number> {
+  if (!pool) return 0;
+  if (!rows.length) return 0;
+  const draftId = publicId.startsWith('draft-') ? publicId.slice('draft-'.length) : publicId;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const params: unknown[] = [draftId];
+    const tuples = rows.map((_, index) => `($1, $${index * 2 + 2}, $${index * 2 + 3}::jsonb)`);
+    rows.forEach((row, index) => params.push(offset + index + 1, JSON.stringify(row)));
+    await client.query(`INSERT INTO import_rows (draft_id, row_number, data) VALUES ${tuples.join(', ')}`, params);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  return rows.length;
+}
+
 export type ImportDraft = { id: string; publicId: string; status: DraftStatus; checksum: string; name: string };
 
 export async function getImportDraft(publicId: string): Promise<ImportDraft | undefined> {

@@ -597,10 +597,11 @@ test('a valid CSV becomes a private draft with a recorded validation', async (t)
   const response = await upload('route.csv', 'year,status\n2024,GAA\n2025,GAA\n', account.cookie);
   const text = await responseText(response);
   assert.equal(response.status, 201, text);
-  const draft = JSON.parse(text) as { status: string; checkRows: string; validation: { rows: number } };
+  const draft = JSON.parse(text) as { status: string; checkRows: string; normalized_rows: number; validation: { rows: number } };
   assert.equal(draft.status, 'validated');
   assert.equal(draft.checkRows, 'ok');
   assert.equal(draft.validation.rows, 2);
+  assert.equal(draft.normalized_rows, 2);
 });
 
 test('an empty dataset is quarantined with a recorded reason', async (t) => {

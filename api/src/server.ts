@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveNormalizedCoverage } from './store.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
@@ -92,6 +92,25 @@ function paginationFor(url: string | undefined): { limit?: number; offset: numbe
 
 const paginate = <T>(items: T[], page: { limit?: number; offset: number }) =>
   items.slice(page.offset, page.limit === undefined ? undefined : page.offset + page.limit);
+
+// shortcut: each page reparses the file; replace with a streaming worker reader
+// when normal imports routinely exceed ~100,000 rows.
+async function normalizeDraft(filename: string, data: Buffer, publicId: string): Promise<number> {
+  let offset = 0;
+  let total = 0;
+  do {
+    const response = await workerFetch(`${workerUrl}/normalize-import?filename=${encodeURIComponent(filename)}&offset=${offset}&limit=1000`,
+      { method: 'POST', body: data as unknown as BodyInit });
+    if (!response.ok) throw new Error('normalization_failed');
+    const page = (await response.json()) as { total_rows?: number; rows?: Array<Record<string, unknown>> };
+    total = Number(page.total_rows ?? 0);
+    const rows = Array.isArray(page.rows) ? page.rows : [];
+    if (rows.length) await saveImportRows(publicId, offset, rows);
+    if (!rows.length) break;
+    offset += rows.length;
+  } while (offset < total);
+  return offset;
+}
 
 const uploads = createGate(maxConcurrentUploads);
 
@@ -484,7 +503,8 @@ const server = createServer((request, response) => {
           checks: Array.isArray(validation.checks) ? validation.checks.filter((item): item is string => typeof item === 'string') : [],
           quarantineReason,
         });
-        json(response, 201, { ...draft, visibility: 'private-draft', checkRows: rowCheck.ok ? 'ok' : rowCheck.error, validation });
+        const normalizedRows = draft.status === 'quarantined' || rows === 0 ? 0 : await normalizeDraft(filename, incoming.data, draft.id);
+        json(response, 201, { ...draft, visibility: 'private-draft', checkRows: rowCheck.ok ? 'ok' : rowCheck.error, normalized_rows: normalizedRows, validation });
       } catch { json(response, 503, { error: 'draft_registration_unavailable' }); }
     }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
     return;

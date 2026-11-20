@@ -569,8 +569,8 @@ test('a second account sees only its own session identity', async (t) => {
 
 // General upload boundary (MVP-C).
 
-const upload = (filename: string, body: string, cookie?: string) =>
-  fetch(`${baseUrl}/api/v1/imports/register?filename=${encodeURIComponent(filename)}&name=${encodeURIComponent('Route test')}`, {
+const upload = (filename: string, body: string, cookie?: string, name = 'Route test') =>
+  fetch(`${baseUrl}/api/v1/imports/register?filename=${encodeURIComponent(filename)}&name=${encodeURIComponent(name)}`, {
     method: 'POST',
     headers: cookie ? { cookie } : {},
     body,
@@ -612,4 +612,64 @@ test('an empty dataset is quarantined with a recorded reason', async (t) => {
   const draft = JSON.parse(text) as { status: string; checkRows: string };
   assert.equal(draft.status, 'quarantined');
   assert.equal(draft.checkRows, 'empty_dataset');
+});
+
+
+// Maintainer publication (MVP-C).
+
+const publishBody = {
+  reason: 'source, license, and coverage checked',
+  metadata: {
+    publisher: 'BetterGov',
+    sourceUrl: 'https://example.org/data',
+    license: 'CC0 1.0 Universal',
+    coverage: { fiscalYears: [2024] },
+    fields: [{ name: 'year', type: 'integer', description: 'Fiscal year' }],
+    limitations: [],
+  },
+};
+
+async function validDraft(label: string) {
+  const account = await maintainer();
+  const name = `Publishable ${randomUUID()}`;
+  const response = await upload('publish.csv', 'year,status\n2024,GAA\n', account.cookie, name);
+  const text = await responseText(response);
+  assert.equal(response.status, 201, text);
+  const draft = JSON.parse(text) as { id: string };
+  return { account, name, id: draft.id };
+}
+
+test('only a maintainer can publish a draft', async (t) => {
+  if (!ready(t)) return;
+  const { id } = await validDraft('publish-role');
+  const submitter = await signIn('publish-submitter');
+  const response = await api(`/api/v1/imports/${id}/publish`, { method: 'POST', cookie: submitter.cookie, body: publishBody });
+  assert.equal(response.status, 403);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'maintainer_required' });
+});
+
+test('publication refuses incomplete metadata', async (t) => {
+  if (!ready(t)) return;
+  const { account, id } = await validDraft('publish-metadata');
+  const response = await api(`/api/v1/imports/${id}/publish`, {
+    method: 'POST', cookie: account.cookie,
+    body: { reason: 'checked', metadata: { publisher: '', sourceUrl: 'ftp://x', license: 'license not confirmed', coverage: {}, fields: [], limitations: undefined } },
+  });
+  assert.equal(response.status, 400);
+  const body = await responseJson<{ error: string; fields: string[] }>(response);
+  assert.equal(body.error, 'invalid_metadata');
+  assert.ok(body.fields.includes('publisher_required'));
+});
+
+test('a maintainer publishes a validated draft as a new release', async (t) => {
+  if (!ready(t)) return;
+  const { account, id, name } = await validDraft('publish-valid');
+  const response = await api(`/api/v1/imports/${id}/publish`, { method: 'POST', cookie: account.cookie, body: publishBody });
+  const text = await responseText(response);
+  assert.equal(response.status, 201, text);
+  const body = JSON.parse(text) as { draft: { status: string }; release_id: string };
+  assert.equal(body.draft.status, 'published');
+  assert.match(body.release_id, /^release-/);
+  const catalog = await responseJson<{ datasets: Array<{ name: string }> }>(await api('/api/v1/datasets'));
+  assert.ok(catalog.datasets.some((dataset) => dataset.name === name), 'published release is in the catalog');
 });

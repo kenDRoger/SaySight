@@ -143,8 +143,12 @@ normalization, and records a validation report for every draft.
 - A draft whose parsed row count is zero is `quarantined` with a machine-readable
   reason in the append-only `quarantine_records` table; an empty dataset is
   `schema_invalid`, and more than 1,000,000 rows is `row_limit_exceeded`.
-- Only a maintainer can publish a validated draft; that control arrives with the
-  next task. General uploads are never normalized or published automatically.
+- `POST /api/v1/imports/:id/publish` — maintainer only; body
+  `{ "reason": "...", "metadata": { publisher, sourceUrl, license, coverage, fields, limitations } }`.
+  Incomplete metadata is refused with `400 invalid_metadata` and the failing
+  field names. Publication creates a **new** release and records the decision in
+  the append-only `publication_decisions` log; the draft becomes `published`.
+  General uploads are never normalized or published automatically.
 
 ## Accessibility audit
 

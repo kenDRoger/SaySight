@@ -3,10 +3,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getLatestExplanation, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listTransitions, pool, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveNormalizedCoverage } from './store.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
+import { validateMetadata, type PublicationMetadata } from './metadata.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { checkImpactGate, conflictRecord, deriveImpact, isImpact, type Impact } from './impact.js';
 import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
@@ -355,6 +356,38 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === 'GET' && request.url === '/api/v1/imports/drafts') { json(response, 200, { releases: listDraftReleases() }); return; }
+
+  const publishMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/imports\/([^/]+)\/publish$/) : undefined;
+  if (publishMatch) {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
+      let payload: { reason?: unknown; metadata?: unknown };
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const reason = validateReason(payload.reason);
+      if ('error' in reason) { json(response, 400, { error: reason.error }); return; }
+      if (!payload.metadata || typeof payload.metadata !== 'object') { json(response, 400, { error: 'invalid_metadata' }); return; }
+      const metadata = validateMetadata(payload.metadata as PublicationMetadata);
+      if (!metadata.ok) { json(response, 400, { error: 'invalid_metadata', fields: metadata.errors }); return; }
+      try {
+        const draft = await getImportDraft(publishMatch[1]);
+        if (!draft) { json(response, 404, { error: 'draft_not_found' }); return; }
+        const published = await publishImportDraft({ publicId: draft.publicId, actorId: user.id, reason: reason.reason,
+          metadata: payload.metadata as { publisher: string; sourceUrl: string; license: string; coverage: unknown; fields: unknown; limitations: unknown } });
+        json(response, 201, { draft: published.draft, release_id: published.releaseId });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : '';
+        if (code === 'draft_not_found') { json(response, 404, { error: code }); return; }
+        if (code === 'draft_not_validated' || code === 'already_published') { json(response, 409, { error: code }); return; }
+        json(response, 503, { error: 'publication_unavailable' });
+      }
+    }).catch(() => json(response, 503, { error: 'publication_unavailable' }));
+    return;
+  }
 
   const registerMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/imports\/register\?filename=([^&]+)&name=([^&]+)$/) : undefined;
   if (registerMatch) {

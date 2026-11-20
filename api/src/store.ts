@@ -78,6 +78,46 @@ export async function registerDraftRelease(name: string, filename: string, data:
 }
 
 export function listDraftReleases() { return [...draftReleases.values()]; }
+export type ImportDraft = { id: string; publicId: string; status: DraftStatus; checksum: string; name: string };
+
+export async function getImportDraft(publicId: string): Promise<ImportDraft | undefined> {
+  if (!pool) return undefined;
+  const uuid = publicId.startsWith('draft-') ? publicId.slice('draft-'.length) : publicId;
+  const result = await pool.query('SELECT id, status, checksum, name FROM import_drafts WHERE id = $1', [uuid]);
+  const row = result.rows[0];
+  return row ? { id: uuid, publicId: `draft-${uuid}`, status: row.status, checksum: row.checksum, name: row.name } : undefined;
+}
+
+// Publication is a maintainer decision and creates a new release; it never edits
+// an existing release, which stays append-only.
+export async function publishImportDraft(input: {
+  publicId: string; actorId: string; reason: string;
+  metadata: { publisher: string; sourceUrl: string; license: string; coverage: unknown; fields: unknown; limitations: unknown };
+}): Promise<{ draft: ImportDraft; releaseId: string }> {
+  if (!pool) throw new Error('database_required');
+  const draft = await getImportDraft(input.publicId);
+  if (!draft) throw new Error('draft_not_found');
+  if (draft.status === 'published') throw new Error('already_published');
+  if (draft.status !== 'validated') throw new Error('draft_not_validated');
+  const releaseId = `release-${randomUUID()}`;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('INSERT INTO publication_decisions (id, draft_id, actor_id, action, reason) VALUES ($1, $2, $3, $4, $5)',
+      [randomUUID(), draft.id, input.actorId, 'publish', input.reason]);
+    await client.query(
+      `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [releaseId, draft.name, input.metadata.publisher, input.metadata.sourceUrl, releaseId, draft.checksum, input.metadata.license, 'current',
+        JSON.stringify({ ...input.metadata, publishedFrom: draft.publicId })],
+    );
+    await client.query("UPDATE import_drafts SET status = 'published' WHERE id = $1", [draft.id]);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  return { draft: { ...draft, status: 'published' }, releaseId };
+}
+
+
 
 export type NormalizedCoverage = { year: number; status: string; rows: number; amount_pesos: number | null; scopes: Record<string, unknown>; notes: string[] };
 

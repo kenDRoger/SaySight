@@ -566,3 +566,50 @@ test('a second account sees only its own session identity', async (t) => {
   assert.notEqual(user.email, first.email);
   assert.notEqual(user.id, first.user.id);
 });
+
+// General upload boundary (MVP-C).
+
+const upload = (filename: string, body: string, cookie?: string) =>
+  fetch(`${baseUrl}/api/v1/imports/register?filename=${encodeURIComponent(filename)}&name=${encodeURIComponent('Route test')}`, {
+    method: 'POST',
+    headers: cookie ? { cookie } : {},
+    body,
+  });
+
+test('draft registration requires a signed-in owner', async (t) => {
+  if (!ready(t)) return;
+  const response = await upload('route.csv', 'year,status\n2024,GAA\n');
+  assert.equal(response.status, 401);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'sign_in_required' });
+});
+
+test('unsupported upload formats are refused before parsing', async (t) => {
+  if (!ready(t)) return;
+  const account = await signIn('upload-format');
+  const response = await upload('route.txt', 'year,status\n2024,GAA\n', account.cookie);
+  assert.equal(response.status, 400);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'unsupported_format' });
+});
+
+test('a valid CSV becomes a private draft with a recorded validation', async (t) => {
+  if (!ready(t)) return;
+  const account = await signIn('upload-valid');
+  const response = await upload('route.csv', 'year,status\n2024,GAA\n2025,GAA\n', account.cookie);
+  const text = await responseText(response);
+  assert.equal(response.status, 201, text);
+  const draft = JSON.parse(text) as { status: string; checkRows: string; validation: { rows: number } };
+  assert.equal(draft.status, 'validated');
+  assert.equal(draft.checkRows, 'ok');
+  assert.equal(draft.validation.rows, 2);
+});
+
+test('an empty dataset is quarantined with a recorded reason', async (t) => {
+  if (!ready(t)) return;
+  const account = await signIn('upload-empty');
+  const response = await upload('empty.csv', 'year,status\n', account.cookie);
+  const text = await responseText(response);
+  assert.equal(response.status, 201, text);
+  const draft = JSON.parse(text) as { status: string; checkRows: string };
+  assert.equal(draft.status, 'quarantined');
+  assert.equal(draft.checkRows, 'empty_dataset');
+});

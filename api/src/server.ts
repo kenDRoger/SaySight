@@ -6,6 +6,7 @@ import { createGate } from './gate.js';
 import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getLatestExplanation, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listTransitions, pool, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveNormalizedCoverage } from './store.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
+import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { checkImpactGate, conflictRecord, deriveImpact, isImpact, type Impact } from './impact.js';
 import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
@@ -38,6 +39,12 @@ type WorkerAnalysisResponse = {
   reproducibility_status?: string;
 };
 
+// Public endpoint contract for every route in this file: success is 200, 201,
+// 202, or 204; failures use a JSON { error: '<code>' } body with 400 for bad
+// input, 401 sign_in_required / invalid_or_expired_link, 403 for denied roles,
+// 404 for missing records, 409 for state conflicts, 413 for capped bodies, 422
+// for rejected imports, 429 upload_busy, and 503 for unavailable dependencies.
+// The findings/:id/page route is HTML and returns 404 or 503 as plain text.
 const maxConcurrentUploads = 2;
 
 function uploadBusy(response: ServerResponse) {
@@ -351,21 +358,38 @@ const server = createServer((request, response) => {
 
   const registerMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/imports\/register\?filename=([^&]+)&name=([^&]+)$/) : undefined;
   if (registerMatch) {
-    const release = uploads.tryAcquire();
-    if (!release) { uploadBusy(response); return; }
-    readBoundedBody(request, maxUploadBytes).finally(release).then(async (incoming) => {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    // A draft has an owner, so anonymous uploads are refused before any body is read.
+    auth.session(requestSessionToken(request)).then(async (user) => {
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      const filename = decodeURIComponent(registerMatch[1]);
+      const name = decodeURIComponent(registerMatch[2]);
+      const release = uploads.tryAcquire();
+      if (!release) { uploadBusy(response); return; }
+      const incoming = await readBoundedBody(request, maxUploadBytes).finally(release);
       if ('denied' in incoming) { json(response, 413, { error: 'dataset_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      const upload = checkUpload({ filename, bytes: incoming.data.length });
+      if (!upload.ok) { json(response, 400, { error: upload.error }); return; }
       try {
-        const data = incoming.data;
-        const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${registerMatch[1]}`, { method: 'POST', body: data as unknown as BodyInit });
+        const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${encodeURIComponent(filename)}`, { method: 'POST', body: incoming.data as unknown as BodyInit });
         if (!workerResponse.ok) { response.writeHead(workerResponse.status, { 'content-type': 'application/json; charset=utf-8' }); response.end(await workerResponse.text()); return; }
-        const release = await registerDraftRelease(decodeURIComponent(registerMatch[2]), decodeURIComponent(registerMatch[1]), data);
-        // The worker owns the validation shape; the API only forwards it.
-        const validation = (await workerResponse.json()) as Record<string, unknown>;
-        json(response, 201, { ...release, visibility: 'private-draft', validation });
+        // The worker owns the validation shape; the API only reads its row count.
+        const validation = (await workerResponse.json()) as { rows?: unknown; status?: unknown; checks?: unknown };
+        const rows = typeof validation.rows === 'number' ? validation.rows : 0;
+        const rowCheck = checkRows(rows);
+        const quarantineReason: QuarantineReason | undefined = !rowCheck.ok
+          ? (rowCheck.error === 'too_many_rows' ? 'row_limit_exceeded' : 'schema_invalid')
+          : undefined;
+        const draft = await registerDraftRelease(name, filename, incoming.data, {
+          submittedBy: user.id, format: upload.format, rows,
+          validationStatus: validation.status === 'Fail' || quarantineReason ? 'Fail' : 'Pass',
+          checks: Array.isArray(validation.checks) ? validation.checks.filter((item): item is string => typeof item === 'string') : [],
+          quarantineReason,
+        });
+        json(response, 201, { ...draft, visibility: 'private-draft', checkRows: rowCheck.ok ? 'ok' : rowCheck.error, validation });
       } catch { json(response, 503, { error: 'draft_registration_unavailable' }); }
-    });
+    }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
     return;
   }
 
@@ -377,7 +401,10 @@ const server = createServer((request, response) => {
       if ('denied' in incoming) { json(response, 413, { error: 'dataset_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
       try {
-        const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${importMatch[1]}`, { method: 'POST', body: incoming.data as unknown as BodyInit });
+        const filename = decodeURIComponent(importMatch[1]);
+      const upload = checkUpload({ filename, bytes: incoming.data.length });
+      if (!upload.ok) { json(response, 400, { error: upload.error }); return; }
+      const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${encodeURIComponent(filename)}`, { method: 'POST', body: incoming.data as unknown as BodyInit });
         response.writeHead(workerResponse.status, { 'content-type': 'application/json; charset=utf-8' }); response.end(await workerResponse.text());
       } catch { json(response, 503, { error: 'import_worker_unavailable' }); }
     });

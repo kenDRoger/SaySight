@@ -27,21 +27,53 @@ export const pool: Pool | undefined = process.env.DATABASE_URL ? new Pool({ conn
 const memory = new Map<string, Evidence>();
 type Finding = { id: string; evidenceId: string; status: string; impact: string; submittedBy: string | null; createdAt: string };
 const findings = new Map<string, Finding>();
-const draftReleases = new Map<string, { id: string; name: string; filename: string; checksum: string; status: 'draft'; createdAt: string }>();
+const draftReleases = new Map<string, { id: string; name: string; filename: string; checksum: string; status: DraftStatus; createdAt: string }>();
 
-export async function registerDraftRelease(name: string, filename: string, data: Buffer): Promise<{ id: string; name: string; filename: string; checksum: string; status: 'draft'; createdAt: string }> {
-  const id = `draft-${randomUUID()}`;
+type DraftStatus = 'private-draft' | 'validated' | 'quarantined' | 'published';
+type DraftOptions = {
+  submittedBy?: string;
+  format: string;
+  rows: number;
+  validationStatus: 'Pass' | 'Fail';
+  checks: string[];
+  quarantineReason?: string;
+};
+
+export async function registerDraftRelease(name: string, filename: string, data: Buffer, options: DraftOptions): Promise<{ id: string; name: string; filename: string; checksum: string; status: DraftStatus; createdAt: string }> {
+  const draftId = randomUUID();
+  // Public draft IDs keep the MVP-A `draft-<uuid>` shape; import tables use a
+  // real UUID so their foreign keys stay typed.
+  const id = `draft-${draftId}`;
   const checksum = createHash('sha256').update(data).digest('hex');
   const createdAt = new Date().toISOString();
+  const status: DraftStatus = options.quarantineReason ? 'quarantined' : options.validationStatus === 'Pass' ? 'validated' : 'private-draft';
   await mkdir(join(process.cwd(), 'data', 'uploads'), { recursive: true });
   await writeFile(join(process.cwd(), 'data', 'uploads', `${id}-${filename}`), data, { flag: 'wx' });
-  const release = { id, name, filename, checksum, status: 'draft' as const, createdAt };
+  const release = { id, name, filename, checksum, status, createdAt };
   draftReleases.set(id, release);
-  if (pool) await pool.query(
-    `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [id, name, 'User upload', 'local-upload', id, checksum, 'license not confirmed', 'possibly_stale', JSON.stringify({ filename, visibility: 'private-draft' })],
-  );
+  if (pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [id, name, 'User upload', 'local-upload', id, checksum, 'license not confirmed', 'possibly_stale', JSON.stringify({ filename, visibility: 'private-draft' })],
+      );
+      await client.query(
+        `INSERT INTO import_drafts (id, name, filename, checksum, bytes, format, status, submitted_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [draftId, name, filename, checksum, data.length, options.format, status, options.submittedBy ?? null],
+      );
+      await client.query(
+        `INSERT INTO import_validations (id, draft_id, status, checks, row_count) VALUES ($1, $2, $3, $4, $5)`,
+        [randomUUID(), draftId, options.validationStatus, JSON.stringify(options.checks), options.rows],
+      );
+      if (options.quarantineReason) await client.query('INSERT INTO quarantine_records (id, draft_id, reason) VALUES ($1, $2, $3)',
+        [randomUUID(), draftId, options.quarantineReason]);
+      await client.query('COMMIT');
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
   return release;
 }
 

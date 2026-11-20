@@ -129,6 +129,23 @@ Environment: `EXPLANATION_PROVIDER_ENDPOINT` and `EXPLANATION_PROVIDER_MODEL`
 but configures no provider by default (endpoint and model are empty), so text
 falls back to the deterministic template until both are set.
 
+## General uploads (MVP-C)
+
+Draft registration requires a session. The API accepts only `.csv`, `.json`,
+`.xlsx`, and `.parquet`, enforces the 100 MiB body and 1,000,000-row caps before
+normalization, and records a validation report for every draft.
+
+- `POST /api/v1/imports/register?filename=<name>&name=<name>` — private draft;
+  `400 unsupported_format` for other extensions, `401 sign_in_required`
+  anonymously.
+- `POST /api/v1/imports/validate?filename=<name>` — parse-only validation, also
+  public for the MVP-A compatibility path.
+- A draft whose parsed row count is zero is `quarantined` with a machine-readable
+  reason in the append-only `quarantine_records` table; an empty dataset is
+  `schema_invalid`, and more than 1,000,000 rows is `row_limit_exceeded`.
+- Only a maintainer can publish a validated draft; that control arrives with the
+  next task. General uploads are never normalized or published automatically.
+
 ## Accessibility audit
 
 With the stack running:

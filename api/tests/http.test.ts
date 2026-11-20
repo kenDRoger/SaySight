@@ -708,13 +708,22 @@ test('saved views require an owner and stay isolated', async (t) => {
 
 test('list pagination is opt-in and preserves the default response', async (t) => {
   if (!ready(t)) return;
-  const all = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets'));
-  assert.ok(all.datasets.length >= 3);
-  const first = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets?limit=1'));
-  assert.equal(first.datasets.length, 1);
-  assert.equal(first.datasets[0].id, all.datasets[0].id);
-  const second = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets?offset=1&limit=1'));
-  assert.equal(second.datasets[0].id, all.datasets[1].id);
+  // Saved views are created by this test, so the assertion does not depend on
+  // how many releases a clean volume happens to contain.
+  const account = await signIn('pagination-owner');
+  for (const name of ['Page one', 'Page two', 'Page three']) {
+    await api('/api/v1/saved-views', {
+      method: 'POST', cookie: account.cookie,
+      body: { name, datasetReleaseId: 'bettergov-gaa-coverage-2026-11-07', filters: {} },
+    });
+  }
+  const all = await responseJson<{ views: Array<{ id: string }> }>(await api('/api/v1/saved-views', { cookie: account.cookie }));
+  assert.ok(all.views.length >= 3);
+  const first = await responseJson<{ views: Array<{ id: string }> }>(await api('/api/v1/saved-views?limit=1', { cookie: account.cookie }));
+  assert.equal(first.views.length, 1);
+  assert.equal(first.views[0].id, all.views[0].id);
+  const second = await responseJson<{ views: Array<{ id: string }> }>(await api('/api/v1/saved-views?offset=1&limit=1', { cookie: account.cookie }));
+  assert.equal(second.views[0].id, all.views[1].id);
 });
 
 test('invalid pagination parameters are refused', async (t) => {

@@ -7,6 +7,7 @@ import { Label } from '@bettergov/kapwa/label';
 import './styles.css';
 
 type Dataset = {
+  id?: string;
   name: string;
   publisher: string;
   sourceUrl: string;
@@ -16,7 +17,15 @@ type Dataset = {
   fields: Array<{ name: string; type: string; unit?: string; description: string }>;
   reuseTerms: string;
   limitations: string[];
+  agencyId?: string | null;
+  region?: string | null;
+  freshnessStatus?: string;
+  lastCheckedAt?: string | null;
 };
+
+type Agency = { id: string; name: string; website: string };
+type SavedView = { id: string; name: string; datasetReleaseId: string; filters: Record<string, unknown>; createdAt: string };
+type ImportDraft = { id: string; name: string; filename: string; status: string; checkRows?: string; validation?: { rows?: number; status?: string; checks?: string[] } };
 
 type Analysis = { recipe: string; calculation: string; input_rows: number; output_rows: number; result: unknown; validation: { status: string; checks: string[] }; warnings: string[]; limitations: string[]; reproducibility_status: string; evidence_id?: string };
 type User = { id: string; email: string; role: 'submitter' | 'reviewer' | 'maintainer' };
@@ -39,6 +48,24 @@ const nextStatuses: Record<string, string[]> = {
 const isReviewer = (role: string | undefined) => role === 'reviewer' || role === 'maintainer';
 const failureMessage = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
 const failureStatus = (reason: unknown) => reason instanceof Error && 'status' in reason ? Number((reason as ApiFailure).status) : 0;
+
+// Pagination is opt-in: an untouched control sends no query parameter, so the
+// API default response shape is preserved.
+const pageQuery = (limit: string, offset: string) => {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', limit);
+  if (offset) params.set('offset', offset);
+  return params.toString() ? `?${params}` : '';
+};
+
+const describeFilters = (filters: Record<string, unknown>) => {
+  const labels: string[] = [];
+  if (typeof filters.recipe === 'string') labels.push(`recipe: ${filters.recipe}`);
+  if (typeof filters.year === 'number') labels.push(`year: ${filters.year}`);
+  if (typeof filters.status === 'string') labels.push(`status: ${filters.status}`);
+  if (Array.isArray(filters.compareYears)) labels.push(`compare: ${filters.compareYears.join(' vs ')}`);
+  return labels.length ? labels.join(' · ') : 'no filters';
+};
 
 async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, { credentials: 'same-origin', ...init });
@@ -85,10 +112,35 @@ function App() {
   const [explanation, setExplanation] = useState<Explanation>();
   const [commentBody, setCommentBody] = useState('');
   const [removalReasons, setRemovalReasons] = useState<Record<string, string>>({});
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+  const [releases, setReleases] = useState<Dataset[]>([]);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [viewName, setViewName] = useState('');
+  const [viewsStatus, setViewsStatus] = useState('');
+  const [viewsError, setViewsError] = useState('');
+  const [viewsLimit, setViewsLimit] = useState('');
+  const [viewsOffset, setViewsOffset] = useState('');
+  const [queueLimit, setQueueLimit] = useState('');
+  const [queueOffset, setQueueOffset] = useState('');
+  const [uploadFile, setUploadFile] = useState<File>();
+  const [uploadName, setUploadName] = useState('');
+  const [uploadDraft, setUploadDraft] = useState<ImportDraft>();
+  const [uploadStatus, setUploadStatus] = useState('');
+  const [uploadError, setUploadError] = useState('');
+  const [publishForm, setPublishForm] = useState({ reason: '', publisher: '', sourceUrl: '', license: '', fiscalYears: '', fields: '', limitations: '' });
+  const [publishStatus, setPublishStatus] = useState('');
+  const [publishError, setPublishError] = useState('');
+  const [publishing, setPublishing] = useState(false);
   const reviewer = isReviewer(user?.role);
+  const maintainer = user?.role === 'maintainer';
+  const agencyName = (id: string | null | undefined) => agencies.find((item) => item.id === id)?.name ?? id ?? 'Unlisted agency';
 
   useEffect(() => {
-    fetch(`${apiBase}/api/v1/datasets`).then((response) => response.json()).then((body) => setDataset(body.datasets[0])).catch(() => setError('The catalog is currently unavailable.'));
+    fetch(`${apiBase}/api/v1/datasets`).then((response) => response.json()).then((body) => { setReleases(body.datasets ?? []); setDataset(body.datasets[0]); }).catch(() => setError('The catalog is currently unavailable.'));
+  }, []);
+
+  useEffect(() => {
+    fetch(`${apiBase}/api/v1/agencies`).then((response) => { if (!response.ok) throw new Error('Agencies unavailable'); return response.json(); }).then((body: { agencies?: Agency[] }) => setAgencies(body.agencies ?? [])).catch(() => setAgencies([]));
   }, []);
 
   useEffect(() => {
@@ -110,12 +162,27 @@ function App() {
   useEffect(() => {
     if (!reviewer) return;
     let active = true;
-    apiRequest<{ findings: Finding[] }>('/api/v1/review/queue')
+    setQueueReady(false); setQueueError('');
+    apiRequest<{ findings: Finding[] }>(`/api/v1/review/queue${pageQuery(queueLimit, queueOffset)}`)
       .then((body) => { if (active) setQueue(body.findings); })
       .catch((reason: unknown) => { if (active) setQueueError(failureMessage(reason, 'Review queue unavailable.')); })
       .finally(() => { if (active) setQueueReady(true); });
     return () => { active = false; };
-  }, [reviewer]);
+  }, [reviewer, queueLimit, queueOffset]);
+
+  useEffect(() => {
+    if (!user) { setSavedViews([]); setViewsStatus(''); return; }
+    let active = true;
+    setViewsStatus('Loading saved views…');
+    apiRequest<{ views: SavedView[] }>(`/api/v1/saved-views${pageQuery(viewsLimit, viewsOffset)}`)
+      .then((body) => {
+        if (!active) return;
+        setSavedViews(body.views); setViewsError('');
+        setViewsStatus(`${body.views.length} saved view${body.views.length === 1 ? '' : 's'}${viewsLimit ? ` · limit ${viewsLimit}` : ' · unpaginated'}${viewsOffset ? ` · offset ${viewsOffset}` : ''}`);
+      })
+      .catch((reason: unknown) => { if (active) { setViewsStatus(''); setViewsError(failureMessage(reason, 'Saved views unavailable.')); } });
+    return () => { active = false; };
+  }, [user, viewsLimit, viewsOffset]);
 
   async function requestLink(event: FormEvent) {
     event.preventDefault();
@@ -176,7 +243,7 @@ function App() {
       setReviewStatus(result.conflict ? `Reviewers disagreed (${result.conflict.statuses.join(' vs ')}); both positions are recorded.` : 'Decision recorded.');
       await loadFinding(item.id);
       try {
-        const refreshed = await apiRequest<{ findings: Finding[] }>('/api/v1/review/queue');
+        const refreshed = await apiRequest<{ findings: Finding[] }>(`/api/v1/review/queue${pageQuery(queueLimit, queueOffset)}`);
         setQueue(refreshed.findings);
       } catch (cause) { setQueueError(failureMessage(cause, 'Review queue unavailable.')); }
     } catch (reason) {
@@ -217,6 +284,64 @@ function App() {
       setComments((current) => current.map((item) => item.id === comment.id ? { ...item, status: 'removed', body: '', removalReason: reason } : item));
       setRemovalReasons((current) => ({ ...current, [comment.id]: '' }));
     } catch (cause) { setDetailError(failureMessage(cause, 'Could not remove the comment.')); }
+  }
+
+  async function saveView(event: FormEvent) {
+    event.preventDefault();
+    if (!dataset || !viewName.trim()) return;
+    setViewsError(''); setViewsStatus('Saving view…');
+    const filters: Record<string, unknown> = { recipe };
+    if (year) filters.year = Number(year);
+    if (status) filters.status = status;
+    if (recipe === 'compare') filters.compareYears = compareYears;
+    try {
+      const view = await apiRequest<SavedView>('/api/v1/saved-views', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: viewName.trim(), datasetReleaseId: dataset.releaseId, filters }) });
+      setSavedViews((current) => [view, ...current]); setViewName(''); setViewsStatus(`Saved view “${view.name}”.`);
+    } catch (reason) { setViewsStatus(''); setViewsError(failureMessage(reason, 'Could not save the view.')); }
+  }
+
+  function restoreView(view: SavedView) {
+    const filters = view.filters as { recipe?: unknown; year?: unknown; status?: unknown; compareYears?: unknown };
+    setRecipe(typeof filters.recipe === 'string' ? filters.recipe : 'summary');
+    setYear(typeof filters.year === 'number' ? String(filters.year) : '');
+    setStatus(typeof filters.status === 'string' ? filters.status : '');
+    if (Array.isArray(filters.compareYears) && filters.compareYears.length === 2) setCompareYears([String(filters.compareYears[0]), String(filters.compareYears[1])]);
+    setViewsStatus(`Restored “${view.name}”.`);
+  }
+
+  async function registerUpload(event: FormEvent) {
+    event.preventDefault();
+    if (!uploadFile) return;
+    setUploadError(''); setUploadDraft(undefined); setPublishStatus(''); setPublishError(''); setUploadStatus('Uploading and validating…');
+    try {
+      const response = await fetch(`${apiBase}/api/v1/imports/register?filename=${encodeURIComponent(uploadFile.name)}&name=${encodeURIComponent(uploadName)}`, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': uploadFile.type || 'application/octet-stream' }, body: uploadFile,
+      });
+      const body = await response.json().catch(() => ({})) as ImportDraft & { error?: string };
+      if (!response.ok) throw new Error(body.error ?? `Upload failed (${response.status}).`);
+      setUploadDraft(body); setUploadStatus(`Draft ${body.id} is ${body.status}.`);
+    } catch (reason) { setUploadStatus(''); setUploadError(failureMessage(reason, 'Upload failed.')); }
+  }
+
+  async function publishDraft(event: FormEvent, draft: ImportDraft) {
+    event.preventDefault();
+    setPublishError(''); setPublishStatus(''); setPublishing(true);
+    const fiscalYears = publishForm.fiscalYears.split(',').map((value) => Number(value.trim())).filter((value) => Number.isInteger(value));
+    const fields = publishForm.fields.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      const [name, type, ...description] = line.split(':');
+      return { name: name.trim(), type: type?.trim() || 'string', description: description.join(':').trim() };
+    });
+    const limitations = publishForm.limitations.split('\n').map((line) => line.trim()).filter(Boolean);
+    try {
+      const result = await apiRequest<{ release_id: string }>(`/api/v1/imports/${encodeURIComponent(draft.id)}/publish`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: publishForm.reason, metadata: { publisher: publishForm.publisher, sourceUrl: publishForm.sourceUrl, license: publishForm.license, coverage: { fiscalYears }, fields, limitations } }),
+      });
+      setPublishStatus(`Published as ${result.release_id}.`);
+      setUploadDraft({ ...draft, status: 'published' });
+    } catch (reason) { setPublishError(failureMessage(reason, 'Could not publish the draft.')); }
+    finally { setPublishing(false); }
   }
 
   async function submit(event: FormEvent) {
@@ -267,6 +392,12 @@ function App() {
           </table>
           </div>
         </details>
+        <h3>Releases and source freshness</h3>
+        {releases.length === 0 ? <p className="muted">No releases listed.</p> : <ul className="release-list">{releases.map((release) => <li key={release.id ?? release.releaseId}>
+          <strong>{release.name}</strong>
+          <p>Agency: {agencyName(release.agencyId)} · Region: {release.region || '—'} · Freshness: <strong>{release.freshnessStatus || 'unknown'}</strong></p>
+          <p className="muted">Last checked: {release.lastCheckedAt ? new Date(release.lastCheckedAt).toLocaleDateString() : '—'}</p>
+        </li>)}</ul>}
       </> : <p>Loading catalog…</p>}
       </Card>
     </section>
@@ -284,12 +415,71 @@ function App() {
       {analysis && <div className="result" aria-live="polite"><h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><pre>{JSON.stringify(analysis.result, null, 2)}</pre>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
       </Card>
     </section>
+    {user && <section aria-labelledby="views-heading">
+      <Card className="card">
+      <h2 id="views-heading">Saved views</h2>
+      <p className="muted">Save the current recipe, fiscal year, coverage status, and comparison as a named view, or restore a saved one.</p>
+      <form onSubmit={saveView}>
+        <div className="form-field"><Label htmlFor="view-name">View name</Label><Input id="view-name" required maxLength={120} value={viewName} onChange={(event) => setViewName(event.target.value)} /></div>
+        <Button type="submit" variant="primary" size="md">Save current filters</Button>
+      </form>
+      <div className="pagination">
+        <div className="form-field"><Label htmlFor="views-limit">Saved views per page</Label><select id="views-limit" value={viewsLimit} onChange={(event) => setViewsLimit(event.target.value)}><option value="">Default</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
+        <div className="form-field"><Label htmlFor="views-offset">Saved views offset</Label><Input id="views-offset" type="number" min="0" inputMode="numeric" placeholder="0" value={viewsOffset} onChange={(event) => setViewsOffset(event.target.value)} /></div>
+      </div>
+      {viewsStatus && <p role="status" className="muted">{viewsStatus}</p>}
+      {viewsError && <p role="alert" className="error">{viewsError}</p>}
+      {savedViews.length === 0 ? <p>No saved views yet.</p> : <ul className="view-list">{savedViews.map((view) => <li key={view.id}>
+        <Button type="button" variant="outline" size="md" onClick={() => restoreView(view)}>Restore {view.name}</Button>
+        <p className="muted">{describeFilters(view.filters)} · saved {new Date(view.createdAt).toLocaleDateString()}</p>
+      </li>)}</ul>}
+      </Card>
+    </section>}
+    {user && <section aria-labelledby="upload-heading">
+      <Card className="card">
+      <h2 id="upload-heading">Upload a dataset draft</h2>
+      <p className="muted">CSV, JSON, XLSX, or Parquet. Every upload stays a private draft until a maintainer publishes it.</p>
+      <form onSubmit={registerUpload}>
+        <div className="form-field"><Label htmlFor="upload-file">Data file</Label><input id="upload-file" type="file" accept=".csv,.json,.xlsx,.parquet" required onChange={(event) => setUploadFile(event.target.files?.[0])} /></div>
+        <div className="form-field"><Label htmlFor="upload-name">Draft name</Label><Input id="upload-name" required maxLength={120} value={uploadName} onChange={(event) => setUploadName(event.target.value)} /></div>
+        <Button type="submit" variant="primary" size="md" disabled={!uploadFile}>Register draft</Button>
+      </form>
+      {uploadStatus && <p role="status" className="muted">{uploadStatus}</p>}
+      {uploadError && <p role="alert" className="error">{uploadError}</p>}
+      {uploadDraft && <div className="import-result">
+        <h3>Draft <code>{uploadDraft.id}</code></h3>
+        <p>Status: <strong>{uploadDraft.status}</strong> · Rows: <strong>{uploadDraft.validation?.rows ?? 0}</strong></p>
+        {uploadDraft.validation?.status && <p>Validation: <strong>{uploadDraft.validation.status}</strong></p>}
+        {uploadDraft.checkRows && <p>Row check: <strong>{uploadDraft.checkRows}</strong></p>}
+        {uploadDraft.validation?.checks && uploadDraft.validation.checks.length > 0 && <ul>{uploadDraft.validation.checks.map((check) => <li key={check}>{check}</li>)}</ul>}
+        {uploadDraft.status === 'quarantined' && <p role="alert" className="error">Quarantined ({uploadDraft.checkRows ?? 'schema_invalid'}): this draft is not published and cannot be published until it is corrected and re-uploaded.</p>}
+      </div>}
+      {maintainer && uploadDraft?.status === 'validated' && <form className="publish-form" onSubmit={(event) => publishDraft(event, uploadDraft)}>
+        <h3>Publish this validated draft</h3>
+        <div className="form-field"><Label htmlFor="publish-reason">Reason for publishing</Label><textarea id="publish-reason" required maxLength={2000} value={publishForm.reason} onChange={(event) => setPublishForm({ ...publishForm, reason: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-publisher">Publisher</Label><Input id="publish-publisher" required maxLength={200} value={publishForm.publisher} onChange={(event) => setPublishForm({ ...publishForm, publisher: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-source-url">Source URL</Label><Input id="publish-source-url" type="url" required value={publishForm.sourceUrl} onChange={(event) => setPublishForm({ ...publishForm, sourceUrl: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-license">License</Label><Input id="publish-license" required maxLength={200} value={publishForm.license} onChange={(event) => setPublishForm({ ...publishForm, license: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-fiscal-years">Fiscal years (comma separated)</Label><Input id="publish-fiscal-years" required placeholder="2024, 2025" value={publishForm.fiscalYears} onChange={(event) => setPublishForm({ ...publishForm, fiscalYears: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-fields">Field definitions, one per line as name:type:description</Label><textarea id="publish-fields" required placeholder="amount:number:Amount in pesos" value={publishForm.fields} onChange={(event) => setPublishForm({ ...publishForm, fields: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-limitations">Limitations, one per line</Label><textarea id="publish-limitations" value={publishForm.limitations} onChange={(event) => setPublishForm({ ...publishForm, limitations: event.target.value })} /></div>
+        <Button type="submit" variant="primary" size="md" isLoading={publishing} disabled={publishing}>{publishing ? 'Publishing…' : 'Publish draft'}</Button>
+        {publishStatus && <p role="status" className="muted">{publishStatus}</p>}
+        {publishError && <p role="alert" className="error">{publishError}</p>}
+      </form>}
+      </Card>
+    </section>}
     {reviewer && <section aria-labelledby="queue-heading">
       <Card className="card">
       <h2 id="queue-heading">Review queue</h2>
+      <div className="pagination">
+        <div className="form-field"><Label htmlFor="queue-limit">Findings per page</Label><select id="queue-limit" value={queueLimit} onChange={(event) => setQueueLimit(event.target.value)}><option value="">Default</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
+        <div className="form-field"><Label htmlFor="queue-offset">Queue offset</Label><Input id="queue-offset" type="number" min="0" inputMode="numeric" placeholder="0" value={queueOffset} onChange={(event) => setQueueOffset(event.target.value)} /></div>
+      </div>
+      <p role="status" className="muted">{queueReady ? `${queue.length} finding${queue.length === 1 ? '' : 's'} shown${queueLimit ? ` · limit ${queueLimit}` : ' · unpaginated'}${queueOffset ? ` · offset ${queueOffset}` : ''}` : 'Loading review queue…'}</p>
       {queueError && <p role="alert" className="error">{queueError}</p>}
       {reviewStatus && <p role="status" className="muted">{reviewStatus}</p>}
-      {!queueReady ? <p role="status">Loading review queue…</p> : queue.length === 0 ? <p>No findings are waiting for review.</p> : <ul className="queue-list">{queue.map((item) => {
+      {!queueReady ? null : queue.length === 0 ? <p>No findings are waiting for review.</p> : <ul className="queue-list">{queue.map((item) => {
         const draft = decisionDrafts[item.id] ?? { status: '', reason: '' };
         const allowed = nextStatuses[item.status] ?? [];
         return <li key={item.id}>

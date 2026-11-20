@@ -29,6 +29,14 @@ code { overflow-wrap: anywhere; }
 .queue-list, .comment-list { display: grid; gap: 1rem; margin: 1rem 0; padding-left: 1.25rem; }
 .queue-list li, .comment-list li { overflow-wrap: anywhere; }
 .review-form, .removal-form { margin-top: .75rem; }
+.release-list, .view-list { display: grid; gap: 1rem; margin: 1rem 0; padding-left: 1.25rem; }
+.release-list li, .view-list li { overflow-wrap: anywhere; }
+.pagination { display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; margin-top: 1rem; }
+.pagination .form-field { min-width: 10rem; max-width: 14rem; }
+.pagination + p { margin-top: .5rem; }
+.import-result { margin-top: 1rem; overflow-wrap: anywhere; }
+.publish-form { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #d9e1e5; }
+.form-field input[type='file'] { max-width: 100%; width: 100%; }
 details { margin-top: 1rem; }
 details summary { cursor: pointer; font-weight: 600; }
 table { width: 100%; border-collapse: collapse; font-size: 0.925rem; }

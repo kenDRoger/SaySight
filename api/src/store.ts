@@ -211,6 +211,14 @@ export async function saveNormalizedCoverage(rows: Array<{ DatasetReleaseID: str
         [release.id, release.name, release.publisher, release.sourceUrl, release.releaseId, release.checksum, release.reuseTerms, release.status,
           JSON.stringify({ coverage: release.coverage, fields: release.fields, limitations: release.limitations })],
       );
+      // The seed creates the canonical release, so it also creates the curated
+      // relationship once its synthetic counterpart exists from migration 018.
+      if (release.id === 'bettergov-gaa-coverage-2026-11-07') await client.query(
+        `INSERT INTO dataset_relationships (id, name, primary_release_id, related_release_id, join_keys, status)
+         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+        ['11111111-2222-3333-4444-555555555555', 'mvp-d-gaa-to-synthetic-fixture', release.id,
+          'join-fixture-2026-11-07', JSON.stringify(['fiscal_year']), 'validated'],
+      );
       for (const row of rows) await client.query(
         `INSERT INTO coverage_records (dataset_release_id, fiscal_year, coverage_status, source_row_count, amount_pesos, scopes, notes)
          VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (dataset_release_id, fiscal_year) DO NOTHING`,

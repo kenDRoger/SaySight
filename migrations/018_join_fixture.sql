@@ -22,11 +22,12 @@ FROM generate_series(2000, 2026) AS year
 ON CONFLICT (dataset_release_id, fiscal_year) DO NOTHING;
 
 INSERT INTO dataset_relationships (id, name, primary_release_id, related_release_id, join_keys, status)
-VALUES (
-  '11111111-2222-3333-4444-555555555555',
+SELECT
+  '11111111-2222-3333-4444-555555555555'::uuid,
   'mvp-d-gaa-to-synthetic-fixture',
   'bettergov-gaa-coverage-2026-11-07',
   'join-fixture-2026-11-07',
   '["fiscal_year"]'::jsonb,
   'validated'
-) ON CONFLICT (id) DO NOTHING;
+WHERE EXISTS (SELECT 1 FROM dataset_releases WHERE id = 'bettergov-gaa-coverage-2026-11-07')
+ON CONFLICT (id) DO NOTHING;

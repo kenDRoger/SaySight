@@ -737,3 +737,14 @@ test('the public catalog excludes private drafts and always has complete arrays'
     assert.ok(Array.isArray(dataset.limitations), `limitations missing: ${dataset.id}`);
   }
 });
+
+test('a saved view cannot reference an unknown release', async (t) => {
+  if (!ready(t)) return;
+  const account = await signIn('view-unknown-release');
+  const response = await api('/api/v1/saved-views', {
+    method: 'POST', cookie: account.cookie,
+    body: { name: 'Broken', datasetReleaseId: 'missing-release', filters: {} },
+  });
+  assert.equal(response.status, 404);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'dataset_release_not_found' });
+});

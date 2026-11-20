@@ -166,6 +166,12 @@ export async function listAgencies(): Promise<Array<{ id: string; name: string; 
   return result.rows;
 }
 
+export async function datasetReleaseExists(id: string): Promise<boolean> {
+  if (!pool) return catalog.some((item) => item.id === id);
+  const result = await pool.query('SELECT 1 FROM dataset_releases WHERE id = $1', [id]);
+  return result.rows.length > 0;
+}
+
 export type SavedView = { id: string; name: string; datasetReleaseId: string; filters: Record<string, unknown>; createdAt: string };
 
 export async function listSavedViews(userId: string): Promise<SavedView[]> {

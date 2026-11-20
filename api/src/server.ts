@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getLatestExplanation, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveNormalizedCoverage } from './store.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
@@ -393,6 +393,7 @@ const server = createServer((request, response) => {
       if (typeof payload.name !== 'string' || !payload.name.trim()) { json(response, 400, { error: 'name_required' }); return; }
       if (typeof payload.datasetReleaseId !== 'string') { json(response, 400, { error: 'dataset_release_id_required' }); return; }
       if (!payload.filters || typeof payload.filters !== 'object' || Array.isArray(payload.filters)) { json(response, 400, { error: 'filters_required' }); return; }
+      if (!await datasetReleaseExists(payload.datasetReleaseId)) { json(response, 404, { error: 'dataset_release_not_found' }); return; }
       const view = await createSavedView({ userId: user.id, name: payload.name.trim(), datasetReleaseId: payload.datasetReleaseId, filters: payload.filters as Record<string, unknown> });
       json(response, 201, view);
     }).catch(() => json(response, 503, { error: 'saved_views_unavailable' }));

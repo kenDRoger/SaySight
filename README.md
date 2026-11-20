@@ -175,6 +175,13 @@ and `/api/v1/saved-views` accept optional `limit` (1–100) and `offset` (>= 0).
 With neither parameter the response is unchanged; invalid values return
 `400 invalid_pagination`. Row caps still bound how much data enters the system.
 
+### Response contracts
+
+There is no shared contracts package: API response shapes are pinned by
+`api/tests/http.test.ts`, and the browser-facing behaviour is pinned by
+`scripts/a11y/ui.mjs` and `audit.mjs`. Keep a new type in one place unless a
+second component genuinely needs it.
+
 ## Accessibility audit
 
 With the stack running:

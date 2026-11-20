@@ -35,6 +35,11 @@ code { overflow-wrap: anywhere; }
 .pagination .form-field { min-width: 10rem; max-width: 14rem; }
 .pagination + p { margin-top: .5rem; }
 .import-result { margin-top: 1rem; overflow-wrap: anywhere; }
+.join-result { margin-top: 1rem; overflow-wrap: anywhere; }
+.diagnostics { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .75rem; margin: 1rem 0; padding: 0; }
+.diagnostics div { min-width: 0; }
+.diagnostics dt { font-weight: 650; color: #53636e; }
+.diagnostics dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .publish-form { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #d9e1e5; }
 .form-field input[type='file'] { max-width: 100%; width: 100%; }
 details { margin-top: 1rem; }

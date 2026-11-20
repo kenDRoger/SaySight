@@ -65,6 +65,14 @@ try {
   await maintainerPage.getByRole('region', { name: 'Upload a dataset draft' }).waitFor();
   console.log('OK dataset upload section is available');
 
+  const join = maintainerPage.getByRole('region', { name: 'Curated join' });
+  await join.getByRole('button', { name: 'Run curated join' }).click();
+  await join.getByText(/Curated join finished: 27 matched rows/).waitFor();
+  const joinText = await join.textContent();
+  assert.ok(joinText?.includes('Passed'), `join reproducibility missing: ${joinText}`);
+  assert.ok(/synthetic/i.test(joinText ?? ''), 'join fixture is not labeled as synthetic');
+  console.log('OK curated join runs and renders diagnostics with the synthetic-fixture warning');
+
   const analysis = await ok('/api/v1/analyze', undefined, { method: 'POST', body: JSON.stringify({ datasetReleaseId: release, recipe: 'summary' }) });
   const finding = await ok('/api/v1/findings', submitterSession, { method: 'POST', body: JSON.stringify({ evidence_id: analysis.evidence_id }) });
   assert.ok(finding.id, `finding response: ${JSON.stringify(finding)}`);

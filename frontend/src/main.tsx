@@ -28,6 +28,14 @@ type SavedView = { id: string; name: string; datasetReleaseId: string; filters: 
 type ImportDraft = { id: string; name: string; filename: string; status: string; checkRows?: string; validation?: { rows?: number; status?: string; checks?: string[] } };
 
 type Analysis = { recipe: string; calculation: string; input_rows: number; output_rows: number; result: unknown; validation: { status: string; checks: string[] }; warnings: string[]; limitations: string[]; reproducibility_status: string; evidence_id?: string };
+type JoinedAnalysis = {
+  matched_rows?: number; unmatched_left?: number; unmatched_right?: number; duplicate_right_keys?: number;
+  input_left_rows?: number; input_right_rows?: number;
+  evidence_id?: string; analysis_run_id?: string; relationship_id?: string; reproducibility_status?: string;
+  validation?: { status?: string; checks?: string[] };
+  warnings?: string[]; limitations?: string[];
+  finding_id?: string;
+};
 type User = { id: string; email: string; role: 'submitter' | 'reviewer' | 'maintainer' };
 type Finding = { id: string; status: string; impact: string };
 type Transition = { fromStatus: string; toStatus: string; reason: string; createdAt: string };
@@ -91,6 +99,10 @@ function App() {
   const [error, setError] = useState('');
   const [validationFailure, setValidationFailure] = useState<{ status: string; checks: string[]; reproducibility_status?: string }>();
   const [loading, setLoading] = useState(false);
+  const [joined, setJoined] = useState<JoinedAnalysis>();
+  const [joinedError, setJoinedError] = useState('');
+  const [joinedStatus, setJoinedStatus] = useState('');
+  const [joining, setJoining] = useState(false);
   const [finding, setFinding] = useState<Finding>();
   const [findingError, setFindingError] = useState('');
   const [user, setUser] = useState<User>();
@@ -344,6 +356,19 @@ function App() {
     finally { setPublishing(false); }
   }
 
+  async function runCuratedJoin() {
+    setJoining(true); setJoinedError(''); setJoined(undefined);
+    setJoinedStatus('Running the curated join with a deterministic rerun check…');
+    try {
+      const body = await apiRequest<JoinedAnalysis>('/api/v1/join/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      setJoined(body);
+      setJoinedStatus(`Curated join finished: ${body.matched_rows ?? 0} matched rows.`);
+    } catch (reason) {
+      setJoinedStatus('');
+      setJoinedError(failureStatus(reason) === 404 ? 'Curated relationship not found.' : failureMessage(reason, 'Curated join failed.'));
+    } finally { setJoining(false); }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault(); setLoading(true); setError(''); setAnalysis(undefined); setValidationFailure(undefined);
     try {
@@ -413,6 +438,35 @@ function App() {
       </form>
       {error && <p role="alert" className="error">{error}</p>}{validationFailure && <div role="status"><p>Validation: <strong>{validationFailure.status}</strong>{validationFailure.reproducibility_status && <> · Reproducibility: <strong>{validationFailure.reproducibility_status}</strong></>}</p><ul>{validationFailure.checks.map((check) => <li key={check}>{check}</li>)}</ul></div>}
       {analysis && <div className="result" aria-live="polite"><h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><pre>{JSON.stringify(analysis.result, null, 2)}</pre>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
+      </Card>
+    </section>
+    <section aria-labelledby="join-heading">
+      <Card className="card">
+      <h2 id="join-heading">Curated join</h2>
+      <p>Joins the validated BetterGov GAA coverage release with a clearly labeled <strong>synthetic fixture</strong> on the explicit <code>fiscal_year</code> key. The fixture is test data, not a real government dataset, and no other dataset pair can be joined here.</p>
+      <Button type="button" variant="primary" size="md" onClick={runCuratedJoin} isLoading={joining} disabled={joining}>{joining ? 'Joining…' : 'Run curated join'}</Button>
+      {joinedStatus && <p role="status" className="muted">{joinedStatus}</p>}
+      {joinedError && <p role="alert" className="error">{joinedError}</p>}
+      {joined && <div className="join-result">
+        <h3>Join diagnostics</h3>
+        <dl className="diagnostics">
+          <div><dt>Matched rows</dt><dd>{joined.matched_rows ?? 0}</dd></div>
+          <div><dt>Unmatched left rows</dt><dd>{joined.unmatched_left ?? 0}</dd></div>
+          <div><dt>Unmatched right rows</dt><dd>{joined.unmatched_right ?? 0}</dd></div>
+          <div><dt>Duplicate right keys</dt><dd>{joined.duplicate_right_keys ?? 0}</dd></div>
+          <div><dt>Input rows, left</dt><dd>{joined.input_left_rows ?? 0}</dd></div>
+          <div><dt>Input rows, right</dt><dd>{joined.input_right_rows ?? 0}</dd></div>
+          <div><dt>Reproducibility</dt><dd>{joined.reproducibility_status ?? 'Not run'}</dd></div>
+          <div><dt>Validation</dt><dd>{joined.validation?.status ?? 'Not run'}</dd></div>
+          <div><dt>Relationship</dt><dd><code>{joined.relationship_id ?? 'unknown'}</code></dd></div>
+        </dl>
+        {joined.validation?.checks && joined.validation.checks.length > 0 && <ul>{joined.validation.checks.map((check) => <li key={check}>{check}</li>)}</ul>}
+        {joined.warnings && joined.warnings.length > 0 && <><h4>Warnings</h4><ul>{joined.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}
+        {joined.limitations?.map((item) => <p className="muted" key={item}>{item}</p>)}
+        <p className="muted">This is a joined analysis candidate; it has not been human-reviewed.</p>
+        {joined.evidence_id ? <p><a href={`${apiBase}/api/v1/evidence/${encodeURIComponent(joined.evidence_id)}`}>View joined evidence JSON</a> · Evidence: <code>{joined.evidence_id}</code></p> : <p className="muted">No evidence record was returned.</p>}
+        {joined.finding_id && <p><a href={`${apiBase}/api/v1/findings/${encodeURIComponent(joined.finding_id)}/page`}>View finding page</a></p>}
+      </div>}
       </Card>
     </section>
     {user && <section aria-labelledby="views-heading">

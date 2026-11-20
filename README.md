@@ -38,9 +38,9 @@ curl -X POST localhost:3000/api/v1/auth/magic-link -H 'content-type: application
 docker compose logs api | grep 'magic link for'
 ```
 
-No mail transport is configured yet, so the link is written to the API log. Set
-`SMTP_*` (deferred) before any non-local deployment; until then a link is only
-reachable by whoever can read the logs.
+There is no mail transport (no SMTP): the link is written to the API log. A real
+deployment cannot sign in until a mail transport is added (`SMTP_*` is deferred);
+until then a link is only reachable by whoever can read the logs.
 
 Roles are `submitter`, `reviewer`, and `maintainer`. The account matching
 `SAYSIGHT_MAINTAINER_EMAIL` becomes a maintainer on its first sign-in; every
@@ -81,8 +81,10 @@ so history cannot be rewritten.
 ### Review depth and disagreement
 
 Every finding carries an impact level derived from its evidence, never chosen by
-the submitter: no year filter speaks for the whole series (`high`), several years
-is `standard`, one year is `low`. A `high` finding needs two independent
+the submitter: no year filter speaks for the whole series (`high`), all 27 years
+are `high`, several but not all years are `standard`, one year is `low`.
+Migration `013_backfill_impact.sql` recomputes legacy findings' impact from
+their evidence filters when the ordered migrations run. A `high` finding needs two independent
 reviewers — the first terminal decision is recorded but does not settle the
 finding — and when two reviewers reach different decisions both positions are
 kept in the append-only `review_conflicts` table and shown on the public page.
@@ -109,7 +111,9 @@ BetterGov prefers it, and the `comments.status` column already allows it.
 The text only rephrases the structured result already stored as evidence. It
 never calculates, selects a recipe, or decides a status, and it is never treated
 as evidence itself — the latest explanation is shown on the public finding page
-under its own heading, above the comments.
+under its own heading, above the comments. The app's finding detail section also
+shows the latest explanation with its source, provider/model when present, and
+template version; signed-in users can generate one there.
 
 The deterministic template answers whenever no provider is configured or the
 provider fails, times out, or returns oversized or invalid text, so the feature
@@ -120,7 +124,9 @@ and the page says which source a reader is looking at.
 Environment: `EXPLANATION_PROVIDER_ENDPOINT` and `EXPLANATION_PROVIDER_MODEL`
 (both required to enable a provider), `EXPLANATION_PROVIDER_NAME` (default
 `openai-compatible`), `EXPLANATION_API_KEY`, and `EXPLANATION_TIMEOUT_MS`
-(default `8000`).
+(default `8000`). `docker-compose.yml` carries all the `EXPLANATION_*` variables
+but configures no provider by default (endpoint and model are empty), so text
+falls back to the deterministic template until both are set.
 
 ## Accessibility audit
 

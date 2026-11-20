@@ -18,6 +18,8 @@ button:disabled { opacity: .65; cursor: wait; }
 pre { overflow-x: auto; padding: 1rem; background: #17212b; color: #f6f8f9; border-radius: .4rem; }
 .error { padding: .75rem; color: #8b1e1e; background: #fff1f1; border: 1px solid #d27b7b; border-radius: .4rem; }
 .muted { color: #53636e; overflow-wrap: anywhere; }
+.explanation-text { margin: .5rem 0; overflow-wrap: anywhere; }
+.explanation-actions { margin-top: .5rem; }
 code { overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 

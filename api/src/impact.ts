@@ -10,7 +10,8 @@ export const impacts: Impact[] = ['low', 'standard', 'high'];
 // single year is the narrowest case the recipes offer.
 export function deriveImpact(input: { filters: Record<string, unknown>; totalYears: number }): Impact {
   const { filters, totalYears } = input;
-  const selected = Array.isArray(filters.years) ? filters.years.length : typeof filters.year === 'number' ? 1 : undefined;
+  const multiYear = (Array.isArray(filters.years) ? filters.years : Array.isArray(filters.compare_years) ? filters.compare_years : []) as unknown[];
+  const selected = multiYear.length || (typeof filters.year === 'number' ? 1 : undefined);
   // No year filter speaks for the entire series; one year is the narrowest claim the
   // recipes can make; anything in between is a comparison across several years.
   if (selected === undefined || totalYears <= 0) return 'high';

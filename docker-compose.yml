@@ -80,6 +80,12 @@ services:
       # Magic links point at the app; the API logs them until a mail transport exists.
       SAYSIGHT_BASE_URL: ${SAYSIGHT_BASE_URL:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # No explanation provider is configured by default; text falls back to the deterministic template.
+      EXPLANATION_PROVIDER_ENDPOINT: ${EXPLANATION_PROVIDER_ENDPOINT:-}
+      EXPLANATION_PROVIDER_MODEL: ${EXPLANATION_PROVIDER_MODEL:-}
+      EXPLANATION_PROVIDER_NAME: ${EXPLANATION_PROVIDER_NAME:-openai-compatible}
+      EXPLANATION_API_KEY: ${EXPLANATION_API_KEY:-}
+      EXPLANATION_TIMEOUT_MS: ${EXPLANATION_TIMEOUT_MS:-8000}
     ports:
       - "3000:3000"
     restart: unless-stopped

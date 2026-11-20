@@ -8,6 +8,8 @@ test('impact is derived from how much of the release period the finding covers',
   assert.equal(deriveImpact({ filters: { years: [2020, 2021, 2022] }, totalYears: 27 }), 'standard');
   assert.equal(deriveImpact({ filters: { year: 2024 }, totalYears: 27 }), 'low');
   assert.equal(deriveImpact({ filters: { years: [2024] }, totalYears: 27 }), 'low');
+  // The compare recipe stores its selection as compare_years.
+  assert.equal(deriveImpact({ filters: { compare_years: [2020, 2021] }, totalYears: 27 }), 'standard');
   // A dateless release has nothing narrower than the whole thing.
   assert.equal(deriveImpact({ filters: {}, totalYears: 0 }), 'high');
 });

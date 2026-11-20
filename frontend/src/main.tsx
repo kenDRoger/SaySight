@@ -23,6 +23,7 @@ type User = { id: string; email: string; role: 'submitter' | 'reviewer' | 'maint
 type Finding = { id: string; status: string; impact: string };
 type Transition = { fromStatus: string; toStatus: string; reason: string; createdAt: string };
 type FindingComment = { id: string; body: string; status: 'visible' | 'removed'; removalReason: string | null; createdAt: string };
+type Explanation = { id: string; text: string; source: 'llm' | 'template'; provider: string | null; model: string | null; templateVersion: string };
 type ApiFailure = Error & { status: number };
 
 const apiBase = import.meta.env.VITE_API_URL ?? '';
@@ -81,6 +82,7 @@ function App() {
   const [detailError, setDetailError] = useState('');
   const [history, setHistory] = useState<Transition[]>([]);
   const [comments, setComments] = useState<FindingComment[]>([]);
+  const [explanation, setExplanation] = useState<Explanation>();
   const [commentBody, setCommentBody] = useState('');
   const [removalReasons, setRemovalReasons] = useState<Record<string, string>>({});
   const reviewer = isReviewer(user?.role);
@@ -130,19 +132,20 @@ function App() {
     setSessionError('');
     try { await apiRequest('/api/v1/auth/logout', { method: 'POST' }); }
     catch (reason) { setSessionError(failureMessage(reason, 'Could not sign out.')); return; }
-    setUser(undefined); setQueue([]); setQueueReady(false); setReviewStatus(''); setSelected(undefined); setHistory([]); setComments([]); setCommentBody('');
+    setUser(undefined); setQueue([]); setQueueReady(false); setReviewStatus(''); setSelected(undefined); setHistory([]); setComments([]); setExplanation(undefined); setCommentBody('');
   }
 
   async function loadFinding(id: string) {
     const path = encodeURIComponent(id);
-    setSelected(undefined); setHistory([]); setComments([]); setDetailError(''); setDetailLoading(true);
+    setSelected(undefined); setHistory([]); setComments([]); setExplanation(undefined); setDetailError(''); setDetailLoading(true);
     try {
-      const [detail, decisionHistory, thread] = await Promise.all([
+      const [detail, decisionHistory, thread, latestExplanation] = await Promise.all([
         apiRequest<Finding>(`/api/v1/findings/${path}`),
         apiRequest<{ transitions: Transition[] }>(`/api/v1/findings/${path}/history`),
         apiRequest<{ comments: FindingComment[] }>(`/api/v1/findings/${path}/comments`),
+        apiRequest<{ explanation: Explanation | null }>(`/api/v1/findings/${path}/explanation`),
       ]);
-      setSelected(detail); setHistory(decisionHistory.transitions); setComments(thread.comments);
+      setSelected(detail); setHistory(decisionHistory.transitions); setComments(thread.comments); setExplanation(latestExplanation.explanation ?? undefined);
     } catch (reason) {
       setDetailError(failureMessage(reason, 'Finding details unavailable.'));
     } finally { setDetailLoading(false); }
@@ -191,6 +194,15 @@ function App() {
       });
       setComments((current) => [...current, created]); setCommentBody('');
     } catch (reason) { setDetailError(failureMessage(reason, 'Could not post the comment.')); }
+  }
+
+  async function generateExplanation() {
+    if (!selected) return;
+    setDetailError('');
+    try {
+      await apiRequest(`/api/v1/findings/${encodeURIComponent(selected.id)}/explanation`, { method: 'POST' });
+      await loadFinding(selected.id);
+    } catch (reason) { setDetailError(failureMessage(reason, 'Could not generate the explanation.')); }
   }
 
   async function removeComment(event: FormEvent, comment: FindingComment) {
@@ -300,6 +312,12 @@ function App() {
       {detailError && <p role="alert" className="error">{detailError}</p>}
       {selected && <>
         <p>Status: <strong>{selected.status}</strong> · Impact: <strong>{selected.impact}</strong></p>
+        <h3>Explanation</h3>
+        {explanation ? <>
+          <p className="explanation-text">{explanation.text}</p>
+          <p className="muted">Source: {explanation.source === 'llm' ? 'LLM' : 'template'}{explanation.provider ? ` · Provider: ${explanation.provider}` : ''}{explanation.model ? ` · Model: ${explanation.model}` : ''} · Template version: {explanation.templateVersion}</p>
+        </> : <p>No explanation generated yet.</p>}
+        {user && <div className="explanation-actions"><Button type="button" variant="outline" size="sm" onClick={generateExplanation}>Generate explanation</Button></div>}
         <h3>Decision history</h3>
         {history.length === 0 ? <p>No decisions recorded yet.</p> : <ol>{history.map((transition, index) => <li key={`${transition.createdAt}-${index}`}><strong>{transition.toStatus}</strong>{transition.fromStatus ? <> from {transition.fromStatus}</> : null} — {transition.reason} <span className="muted">({transition.createdAt})</span></li>)}</ol>}
         <h3>Comments</h3>

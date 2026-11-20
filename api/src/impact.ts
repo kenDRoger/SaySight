@@ -5,17 +5,17 @@ export type Impact = 'low' | 'standard' | 'high';
 export type Role = 'submitter' | 'reviewer' | 'maintainer';
 export const impacts: Impact[] = ['low', 'standard', 'high'];
 
-// Deterministic derivation: the broader the slice of the dataset and the more
-// money it covers, the more scrutiny the finding needs.
-export function deriveImpact(evidence: { inputRows: number; sourceRows: number; filters: Record<string, unknown> }): Impact {
-  const { inputRows, sourceRows, filters } = evidence;
-  const share = sourceRows > 0 ? inputRows / sourceRows : 1;
-  const narrowed = Object.values(filters).some((value) => value !== undefined && value !== null && value !== '');
-  // An unfiltered run describes the whole release, so a mistake there misleads the
-  // most people; a single narrow filter is the least consequential case.
-  if (!narrowed && share >= 0.99) return 'high';
-  if (share >= 0.5) return 'standard';
-  return 'low';
+// Deterministic derivation from how much of the release period a finding speaks
+// for: a claim about the whole series can mislead everyone who reads it, while a
+// single year is the narrowest case the recipes offer.
+export function deriveImpact(input: { filters: Record<string, unknown>; totalYears: number }): Impact {
+  const { filters, totalYears } = input;
+  const selected = Array.isArray(filters.years) ? filters.years.length : typeof filters.year === 'number' ? 1 : undefined;
+  // No year filter speaks for the entire series; one year is the narrowest claim the
+  // recipes can make; anything in between is a comparison across several years.
+  if (selected === undefined || totalYears <= 0) return 'high';
+  if (selected <= 1) return 'low';
+  return selected >= totalYears ? 'high' : 'standard';
 }
 
 // Independent decisions needed before a status is final.

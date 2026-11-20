@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { checkImpactGate, conflictRecord, deriveImpact, detectConflict, impacts, isImpact, requiredDecisions } from '../src/impact.ts';
 
-test('impact is derived from how much of the release the finding covers', () => {
-  assert.equal(deriveImpact({ inputRows: 27, sourceRows: 27, filters: {} }), 'high');
-  assert.equal(deriveImpact({ inputRows: 27, sourceRows: 27, filters: { year: 2024 } }), 'standard');
-  assert.equal(deriveImpact({ inputRows: 5, sourceRows: 27, filters: { year: 2024, status: 'GAA' } }), 'low');
-  assert.equal(deriveImpact({ inputRows: 0, sourceRows: 0, filters: {} }), 'high');
+test('impact is derived from how much of the release period the finding covers', () => {
+  assert.equal(deriveImpact({ filters: {}, totalYears: 27 }), 'high');
+  assert.equal(deriveImpact({ filters: { status: 'GAA' }, totalYears: 27 }), 'high');
+  assert.equal(deriveImpact({ filters: { years: [2020, 2021, 2022] }, totalYears: 27 }), 'standard');
+  assert.equal(deriveImpact({ filters: { year: 2024 }, totalYears: 27 }), 'low');
+  assert.equal(deriveImpact({ filters: { years: [2024] }, totalYears: 27 }), 'low');
+  // A dateless release has nothing narrower than the whole thing.
+  assert.equal(deriveImpact({ filters: {}, totalYears: 0 }), 'high');
 });
 
 test('high impact requires two independent decisions', () => {

@@ -3,9 +3,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getNormalizedCoverage, listComments, listDraftReleases, listReviewQueue, listTransitions, pool, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, getComment, getCatalogReleases, getEvidence, getFinding, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listTransitions, pool, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveNormalizedCoverage } from './store.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
-import { checkTransition, isStatus, reviewQueueStatuses, validateReason } from './review.js';
+import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
+import { checkImpactGate, conflictRecord, deriveImpact, isImpact, type Impact } from './impact.js';
 import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
 import { createPgAuthStore } from './authpg.js';
 
@@ -178,8 +179,25 @@ const server = createServer((request, response) => {
         json(response, 409, { error: check.error, ...('allowed' in check ? { allowed: check.allowed } : {}), current_status: finding.status });
         return;
       }
-      const transition = await recordTransition({ findingId: finding.id, fromStatus: finding.status, toStatus: payload.status, actorId: user.id, reason: reason.reason });
-      json(response, 200, { finding: { ...finding, status: payload.status }, transition });
+      // Only a terminal decision needs the second reviewer; moving a finding into
+      // review is ordinary workflow progress and always applies.
+      const isDecision = (decisionStatuses as string[]).includes(payload.status);
+      const priorDecisions = finding.impact === 'high' && isDecision ? await listDecisionTransitions(finding.id, [...decisionStatuses]) : [];
+      const distinctActors = new Set(priorDecisions.map((decision) => decision.actorId));
+      distinctActors.delete(user.id);
+      const needsSecondReviewer = finding.impact === 'high' && isImpact(finding.impact) && isDecision;
+      if (needsSecondReviewer) {
+        const gate = checkImpactGate({ impact: finding.impact as Impact, decisionsMade: distinctActors.size, role: user.role });
+        if (!gate.ok) { json(response, 409, { error: gate.error, impact: finding.impact }); return; }
+      }
+      const applyStatus = !needsSecondReviewer || distinctActors.size >= 1;
+      const transition = await recordTransition({ findingId: finding.id, fromStatus: finding.status, toStatus: payload.status, actorId: user.id, reason: reason.reason, applyStatus });
+      // Two reviewers reaching different decisions are both kept, and the
+      // disagreement is recorded rather than overwritten.
+      const decisions = [...priorDecisions, transition].map((decision) => ({ actorId: decision.actorId, status: decision.toStatus, reason: decision.reason, createdAt: decision.createdAt }));
+      const conflict = conflictRecord(finding.id, decisions);
+      if (conflict) await recordConflict(conflict);
+      json(response, 200, { finding: { ...finding, status: applyStatus ? payload.status : finding.status }, transition, ...(conflict ? { conflict: { statuses: conflict.statuses } } : {}) });
     }).catch(() => json(response, 503, { error: 'review_unavailable' }));
     return;
   }
@@ -413,7 +431,10 @@ const server = createServer((request, response) => {
         if (typeof payload.evidence_id !== 'string') { json(response, 400, { error: 'evidence_id_required' }); return; }
         const evidence = await getEvidence(payload.evidence_id);
         if (!evidence) { json(response, 404, { error: 'evidence_not_found' }); return; }
-        json(response, 201, await createFinding(evidence.id, user.id));
+        // Impact is derived from the evidence, never chosen by the submitter.
+        const release = catalog.find((item) => item.id === evidence.datasetReleaseId);
+        const impact = deriveImpact({ filters: evidence.filters, totalYears: release?.coverage.fiscalYears.length ?? 0 });
+        json(response, 201, await createFinding(evidence.id, user.id, impact));
       } catch { json(response, 400, { error: 'invalid_json' }); }
     });
     return;
@@ -426,10 +447,11 @@ const server = createServer((request, response) => {
       const evidence = await getEvidence(finding.evidenceId);
       const transitions = await listTransitions(finding.id).catch(() => []);
       const comments = await listComments(finding.id).catch(() => []);
+      const conflicts = await listConflicts(finding.id).catch(() => []);
       const dataset = catalog.find((item) => item.id === evidence?.datasetReleaseId);
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       const details = evidence ? `<section aria-labelledby="evidence-heading"><h2 id="evidence-heading">Evidence</h2><dl><dt>Dataset</dt><dd>${escapeHtml(dataset?.name ?? evidence.datasetReleaseId)}</dd><dt>Source</dt><dd>${dataset ? `<a href="${escapeHtml(dataset.sourceUrl)}">${escapeHtml(dataset.sourceUrl)}</a>` : escapeHtml(evidence.datasetReleaseId)}</dd><dt>Release</dt><dd><code>${escapeHtml(evidence.datasetReleaseId)}</code></dd><dt>SHA-256</dt><dd><code>${escapeHtml(evidence.releaseChecksum)}</code></dd><dt>Recipe</dt><dd>${escapeHtml(evidence.recipe)} v${escapeHtml(evidence.recipeVersion)}</dd><dt>Calculation</dt><dd>${escapeHtml(evidence.calculation)}</dd><dt>Filters</dt><dd><pre>${escapeHtml(JSON.stringify(evidence.filters, null, 2))}</pre></dd><dt>Rows</dt><dd>${evidence.inputRows} input, ${evidence.outputRows} output</dd><dt>Reproducibility</dt><dd>${escapeHtml(evidence.reproducibilityStatus)}</dd><dt>Validation</dt><dd><pre>${escapeHtml(JSON.stringify(evidence.validation, null, 2))}</pre></dd></dl><h3>Result</h3><pre>${escapeHtml(JSON.stringify(evidence.result, null, 2))}</pre><h3>Warnings</h3><ul>${evidence.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul><h3>Limitations</h3><ul>${evidence.limitations.map((limitation) => `<li>${escapeHtml(limitation)}</li>`).join('')}</ul></section>` : '<p>Evidence unavailable.</p>';
-      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong></p>${transitions.length ? `<section aria-labelledby="history-heading"><h2 id="history-heading">Review history</h2><ol>${transitions.map((transition) => `<li><strong>${escapeHtml(transition.toStatus)}</strong> — ${escapeHtml(transition.reason)} <small>(${escapeHtml(transition.createdAt)})</small></li>`).join('')}</ol></section>` : ''}<p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}<section aria-labelledby="comments-heading"><h2 id="comments-heading">Comments</h2>${comments.length ? `<ol>${comments.map((comment) => comment.status === 'removed'
+      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong> · Review depth: ${escapeHtml(finding.impact)}</p>${conflicts.length ? `<p><strong>Reviewers disagreed</strong>: ${conflicts.map((conflict) => escapeHtml(conflict.statuses.join(' vs '))).join('; ')} — both positions are recorded in the history.</p>` : ''}${transitions.length ? `<section aria-labelledby="history-heading"><h2 id="history-heading">Review history</h2><ol>${transitions.map((transition) => `<li><strong>${escapeHtml(transition.toStatus)}</strong> — ${escapeHtml(transition.reason)} <small>(${escapeHtml(transition.createdAt)})</small></li>`).join('')}</ol></section>` : ''}<p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}<section aria-labelledby="comments-heading"><h2 id="comments-heading">Comments</h2>${comments.length ? `<ol>${comments.map((comment) => comment.status === 'removed'
         ? `<li><em>Comment removed by a moderator</em>${comment.removalReason ? ` — ${escapeHtml(comment.removalReason)}` : ''}</li>`
         : `<li>${escapeHtml(comment.body)} <small>(${escapeHtml(comment.createdAt)})</small></li>`).join('')}</ol>` : '<p>No comments yet.</p>'}</section></main></body></html>`);
     }).catch(() => { response.writeHead(503); response.end('Finding page unavailable'); });

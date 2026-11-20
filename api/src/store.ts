@@ -25,7 +25,7 @@ export type Evidence = {
 // Accounts require durable storage, so the pool is shared with the auth layer.
 export const pool: Pool | undefined = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : undefined;
 const memory = new Map<string, Evidence>();
-type Finding = { id: string; evidenceId: string; status: string; submittedBy: string | null; createdAt: string };
+type Finding = { id: string; evidenceId: string; status: string; impact: string; submittedBy: string | null; createdAt: string };
 const findings = new Map<string, Finding>();
 const draftReleases = new Map<string, { id: string; name: string; filename: string; checksum: string; status: 'draft'; createdAt: string }>();
 
@@ -107,19 +107,21 @@ export async function saveEvidence(input: Omit<Evidence, 'id' | 'createdAt'>): P
   return evidence;
 }
 
-export async function createFinding(evidenceId: string, submittedBy: string): Promise<Finding> {
-  const finding: Finding = { id: randomUUID(), evidenceId, status: 'Unverified', submittedBy, createdAt: new Date().toISOString() };
-  findings.set(finding.id, finding);
-  if (pool) await pool.query('INSERT INTO findings (id, analysis_run_id, status, submitted_by) VALUES ($1, $2, $3, $4)', [finding.id, evidenceId, finding.status, submittedBy]);
+export async function createFinding(evidenceId: string, submittedBy: string, impact: string): Promise<Finding> {
+  const finding: Finding = { id: randomUUID(), evidenceId, status: 'Unverified', impact, submittedBy, createdAt: new Date().toISOString() };
+  // Only the database-less development fallback keeps findings in memory; with a
+  // pool, PostgreSQL is the single source of truth and a local copy would go stale.
+  if (!pool) findings.set(finding.id, finding);
+  if (pool) await pool.query('INSERT INTO findings (id, analysis_run_id, status, submitted_by, impact) VALUES ($1, $2, $3, $4, $5)',
+    [finding.id, evidenceId, finding.status, submittedBy, impact]);
   return finding;
 }
 
 export async function getFinding(id: string): Promise<Finding | undefined> {
-  if (findings.has(id)) return findings.get(id);
-  if (!pool) return undefined;
-  const result = await pool.query('SELECT id, analysis_run_id, status, submitted_by, created_at FROM findings WHERE id = $1', [id]);
+  if (!pool) return findings.get(id);
+  const result = await pool.query('SELECT id, analysis_run_id, status, impact, submitted_by, created_at FROM findings WHERE id = $1', [id]);
   const row = result.rows[0];
-  return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
+  return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
 }
 
 export type Comment = { id: string; findingId: string; authorId: string; body: string; status: 'visible' | 'removed'; createdAt: string; removalReason: string | null };
@@ -172,7 +174,8 @@ export async function removeComment(input: { commentId: string; actorId: string;
 
 export type FindingTransition = { id: string; findingId: string; fromStatus: string; toStatus: string; actorId: string; reason: string; createdAt: string };
 
-export async function recordTransition(input: { findingId: string; fromStatus: string; toStatus: string; actorId: string; reason: string }): Promise<FindingTransition> {
+export async function recordTransition(input: { findingId: string; fromStatus: string; toStatus: string; actorId: string; reason: string; applyStatus?: boolean }): Promise<FindingTransition> {
+  const applyStatus = input.applyStatus ?? true;
   const transition: FindingTransition = { id: randomUUID(), ...input, createdAt: new Date().toISOString() };
   if (!pool) throw new Error('database_required');
   const client = await pool.connect();
@@ -180,7 +183,9 @@ export async function recordTransition(input: { findingId: string; fromStatus: s
     await client.query('BEGIN');
     await client.query('INSERT INTO finding_transitions (id, finding_id, from_status, to_status, actor_id, reason) VALUES ($1, $2, $3, $4, $5, $6)',
       [transition.id, transition.findingId, transition.fromStatus, transition.toStatus, transition.actorId, transition.reason]);
-    await client.query('UPDATE findings SET status = $2 WHERE id = $1', [transition.findingId, transition.toStatus]);
+    // A high-impact first decision is recorded without moving the status: the
+    // finding needs a second, independent reviewer before it is settled.
+    if (applyStatus) await client.query('UPDATE findings SET status = $2 WHERE id = $1', [transition.findingId, transition.toStatus]);
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   return transition;
@@ -192,17 +197,41 @@ export async function listTransitions(findingId: string): Promise<FindingTransit
   return result.rows.map((row) => ({ id: row.id, findingId: row.finding_id, fromStatus: row.from_status, toStatus: row.to_status, actorId: row.actor_id, reason: row.reason, createdAt: row.created_at.toISOString() }));
 }
 
+// Decisions already on record, and how many different reviewers made them: a
+// high-impact finding is only settled by two independent reviewers.
+export async function listDecisionTransitions(findingId: string, decisionStatuses: string[]): Promise<FindingTransition[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id, finding_id, from_status, to_status, actor_id, reason, created_at FROM finding_transitions
+     WHERE finding_id = $1 AND to_status = ANY($2) ORDER BY created_at`,
+    [findingId, decisionStatuses],
+  );
+  return result.rows.map((row) => ({ id: row.id, findingId: row.finding_id, fromStatus: row.from_status, toStatus: row.to_status, actorId: row.actor_id, reason: row.reason, createdAt: row.created_at.toISOString() }));
+}
+
+export async function recordConflict(input: { findingId: string; statuses: string[]; positions: Array<{ actorId: string; status: string; reason: string; createdAt: string }> }): Promise<void> {
+  if (!pool) throw new Error('database_required');
+  await pool.query('INSERT INTO review_conflicts (id, finding_id, statuses, positions) VALUES ($1, $2, $3, $4)',
+    [randomUUID(), input.findingId, JSON.stringify(input.statuses), JSON.stringify(input.positions)]);
+}
+
+export async function listConflicts(findingId: string): Promise<Array<{ id: string; statuses: string[]; positions: unknown; createdAt: string }>> {
+  if (!pool) return [];
+  const result = await pool.query('SELECT id, statuses, positions, created_at FROM review_conflicts WHERE finding_id = $1 ORDER BY created_at', [findingId]);
+  return result.rows.map((row) => ({ id: row.id, statuses: row.statuses, positions: row.positions, createdAt: row.created_at.toISOString() }));
+}
+
 // The queue is what a reviewer can act on now: findings waiting for review, oldest
 // first, with the author so self-review can be refused.
 export async function listReviewQueue(statuses: string[]): Promise<Array<Finding & { authorRole: string | null; authorEmail: string | null }>> {
   if (!pool) return [];
   const result = await pool.query(
-    `SELECT f.id, f.analysis_run_id, f.status, f.submitted_by, f.created_at, u.role AS author_role, u.email AS author_email
+    `SELECT f.id, f.analysis_run_id, f.status, f.impact, f.submitted_by, f.created_at, u.role AS author_role, u.email AS author_email
      FROM findings f LEFT JOIN users u ON u.id = f.submitted_by
      WHERE f.status = ANY($1) ORDER BY f.created_at`,
     [statuses],
   );
-  return result.rows.map((row) => ({ id: row.id, evidenceId: row.analysis_run_id, status: row.status, submittedBy: row.submitted_by,
+  return result.rows.map((row) => ({ id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact, submittedBy: row.submitted_by,
     createdAt: row.created_at.toISOString(), authorRole: row.author_role ?? null, authorEmail: row.author_email ?? null }));
 }
 

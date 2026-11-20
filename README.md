@@ -78,6 +78,15 @@ Nobody reviews their own submission, whatever their role, and a submitter cannot
 decide anything. `finding_transitions` rejects `UPDATE`, `DELETE`, and `TRUNCATE`,
 so history cannot be rewritten.
 
+### Review depth and disagreement
+
+Every finding carries an impact level derived from its evidence, never chosen by
+the submitter: no year filter speaks for the whole series (`high`), several years
+is `standard`, one year is `low`. A `high` finding needs two independent
+reviewers — the first terminal decision is recorded but does not settle the
+finding — and when two reviewers reach different decisions both positions are
+kept in the append-only `review_conflicts` table and shown on the public page.
+
 ### Comments
 
 - `GET /api/v1/findings/:id/comments` — public list; removed comments stay in place

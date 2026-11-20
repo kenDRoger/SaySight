@@ -72,6 +72,27 @@ function readBoundedBody(request: IncomingMessage, limit: number): Promise<{ dat
   });
 }
 
+// Optional pagination for growing lists. With no parameters the response shape is
+// unchanged, so every MVP-A/MVP-B caller keeps working.
+function paginationFor(url: string | undefined): { limit?: number; offset: number } | { error: true } {
+  const params = new URL(url ?? '/', 'http://localhost').searchParams;
+  const rawLimit = params.get('limit');
+  const rawOffset = params.get('offset');
+  const parse = (value: string | null, min: number, max?: number) => {
+    if (value === null) return undefined;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min || (max !== undefined && parsed > max)) return null;
+    return parsed;
+  };
+  const limit = parse(rawLimit, 1, 100);
+  const offset = parse(rawOffset, 0) ?? 0;
+  if (limit === null || (rawOffset !== null && parse(rawOffset, 0) === null)) return { error: true };
+  return { limit, offset };
+}
+
+const paginate = <T>(items: T[], page: { limit?: number; offset: number }) =>
+  items.slice(page.offset, page.limit === undefined ? undefined : page.offset + page.limit);
+
 const uploads = createGate(maxConcurrentUploads);
 
 // Accounts need PostgreSQL; without it the auth endpoints report themselves as
@@ -104,8 +125,11 @@ const server = createServer((request, response) => {
     return;
   }
 
-  if (request.method === 'GET' && request.url === '/api/v1/datasets') {
-    getCatalogReleases().then((releases) => json(response, 200, { datasets: releases?.length ? releases : catalog })).catch(() => json(response, 503, { error: 'catalog_unavailable' }));
+  const datasetsMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/datasets(?:\?(.*))?$/) : undefined;
+  if (datasetsMatch) {
+    const page = paginationFor(request.url);
+    if ('error' in page) { json(response, 400, { error: 'invalid_pagination' }); return; }
+    getCatalogReleases().then((releases) => json(response, 200, { datasets: paginate(releases?.length ? releases : catalog, page) })).catch(() => json(response, 503, { error: 'catalog_unavailable' }));
     return;
   }
 
@@ -165,14 +189,17 @@ const server = createServer((request, response) => {
     return;
   }
 
-  if (request.method === 'GET' && request.url === '/api/v1/review/queue') {
+  const reviewQueueMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/review\/queue(?:\?(.*))?$/) : undefined;
+  if (reviewQueueMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    const page = paginationFor(request.url);
+    if ('error' in page) { json(response, 400, { error: 'invalid_pagination' }); return; }
     auth.session(requestSessionToken(request)).then(async (user) => {
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       if (user.role !== 'reviewer' && user.role !== 'maintainer') { json(response, 403, { error: 'reviewer_required' }); return; }
       // A reviewer's own submissions are excluded rather than shown and refused.
       const queue = await listReviewQueue([...reviewQueueStatuses]);
-      json(response, 200, { findings: queue.filter((finding) => finding.submittedBy !== user.id) });
+      json(response, 200, { findings: paginate(queue.filter((finding) => finding.submittedBy !== user.id), page) });
     }).catch(() => json(response, 503, { error: 'review_queue_unavailable' }));
     return;
   }
@@ -221,9 +248,11 @@ const server = createServer((request, response) => {
     return;
   }
 
-  const commentsMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/comments$/) : undefined;
+  const commentsMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/comments(?:\?(.*))?$/) : undefined;
   if (commentsMatch) {
-    listComments(commentsMatch[1]).then((comments) => json(response, 200, { comments })).catch(() => json(response, 503, { error: 'comments_unavailable' }));
+    const page = paginationFor(request.url);
+    if ('error' in page) { json(response, 400, { error: 'invalid_pagination' }); return; }
+    listComments(commentsMatch[1]).then((comments) => json(response, 200, { comments: paginate(comments, page) })).catch(() => json(response, 503, { error: 'comments_unavailable' }));
     return;
   }
 
@@ -321,11 +350,14 @@ const server = createServer((request, response) => {
     return;
   }
 
-  if (request.method === 'GET' && request.url === '/api/v1/saved-views') {
+  const savedViewsMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/saved-views(?:\?(.*))?$/) : undefined;
+  if (savedViewsMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    const page = paginationFor(request.url);
+    if ('error' in page) { json(response, 400, { error: 'invalid_pagination' }); return; }
     auth.session(requestSessionToken(request)).then(async (user) => {
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
-      json(response, 200, { views: await listSavedViews(user.id) });
+      json(response, 200, { views: paginate(await listSavedViews(user.id), page) });
     }).catch(() => json(response, 503, { error: 'saved_views_unavailable' }));
     return;
   }

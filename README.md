@@ -168,6 +168,13 @@ curl -b cookies.txt -X POST localhost:3000/api/v1/saved-views \
 `GET /api/v1/saved-views` returns only the caller's views. Saved views are
 workflow state, not evidence.
 
+### Pagination
+
+`GET /api/v1/datasets`, `/api/v1/review/queue`, `/api/v1/findings/:id/comments`,
+and `/api/v1/saved-views` accept optional `limit` (1–100) and `offset` (>= 0).
+With neither parameter the response is unchanged; invalid values return
+`400 invalid_pagination`. Row caps still bound how much data enters the system.
+
 ## Accessibility audit
 
 With the stack running:

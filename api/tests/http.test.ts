@@ -702,3 +702,25 @@ test('saved views require an owner and stay isolated', async (t) => {
   const theirs = await responseJson<{ views: Array<{ name: string }> }>(await api('/api/v1/saved-views', { cookie: second.cookie }));
   assert.ok(!theirs.views.some((view) => view.name === 'FY2024'));
 });
+
+// Optional pagination (MVP-C).
+
+test('list pagination is opt-in and preserves the default response', async (t) => {
+  if (!ready(t)) return;
+  const all = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets'));
+  assert.ok(all.datasets.length >= 3);
+  const first = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets?limit=1'));
+  assert.equal(first.datasets.length, 1);
+  assert.equal(first.datasets[0].id, all.datasets[0].id);
+  const second = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets?offset=1&limit=1'));
+  assert.equal(second.datasets[0].id, all.datasets[1].id);
+});
+
+test('invalid pagination parameters are refused', async (t) => {
+  if (!ready(t)) return;
+  for (const query of ['limit=0', 'limit=101', 'offset=-1', 'limit=abc']) {
+    const response = await api(`/api/v1/datasets?${query}`);
+    assert.equal(response.status, 400, query);
+    assert.deepEqual(await responseJson<unknown>(response), { error: 'invalid_pagination' });
+  }
+});

@@ -10,7 +10,7 @@ Prerequisite: Docker Compose.
 docker compose up --build
 ```
 
-Compose builds and starts the React/Vite/Kapwa frontend, TypeScript API, Go worker, PostgreSQL, and MinIO-compatible object-storage service. It applies ordered SQL migrations and imports the safe public BetterGov sample into PostgreSQL. The seed import verifies the published SHA-256 before normalization and is idempotent. The fixed MVP-A source snapshot remains a local immutable artifact; API object-storage integration is staged for later upload work.
+Compose builds and starts the React/Vite/Kapwa frontend, TypeScript API, Go worker, PostgreSQL, and MinIO-compatible object-storage service. It applies ordered SQL migrations and imports the safe public BetterGov sample into PostgreSQL. The seed import verifies the published SHA-256 before normalization and is idempotent. The worker stores the raw release once as an immutable snapshot in object storage (`saysight/releases/...`) and analyses prefer it, falling back to the checksum-verified local artifact when object storage is unavailable.
 
 - Application: <http://localhost:5173>
 - API health: <http://localhost:3000/health>
@@ -24,6 +24,6 @@ Local-only database and MinIO development credentials are configured in `docker-
 - `api/` — TypeScript catalog, analysis, evidence, and public finding API.
 - `worker/` — Go checksum/import validation and deterministic recipe execution.
 - `migrations/` — ordered PostgreSQL schema migrations.
-- `scripts/` — migration tracking and local database setup.
+- `scripts/` — migration tracking and local database setup; the public sample seed lives in `api/scripts/seed.mjs`.
 
 The first release is a frozen, checksum-verified source snapshot. Scheduled source refresh, authenticated review, and publication of general user uploads are later staged work; see `mvp.md`.

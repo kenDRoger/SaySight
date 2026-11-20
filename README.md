@@ -78,6 +78,18 @@ Nobody reviews their own submission, whatever their role, and a submitter cannot
 decide anything. `finding_transitions` rejects `UPDATE`, `DELETE`, and `TRUNCATE`,
 so history cannot be rewritten.
 
+### Comments
+
+- `GET /api/v1/findings/:id/comments` — public list; removed comments stay in place
+  with their text dropped and the removal reason shown.
+- `POST /api/v1/findings/:id/comments` — signed in; `{ "body": "..." }`.
+- `POST /api/v1/comments/:id/removal` — reviewer or maintainer; `{ "reason": "..." }`.
+
+Comments are visible immediately (post-moderation) and only reviewers and
+maintainers can remove one, with a mandatory reason recorded in the append-only
+`comment_moderation` log. Pre-moderation remains the documented alternative if
+BetterGov prefers it, and the `comments.status` column already allows it.
+
 ## Accessibility audit
 
 With the stack running:

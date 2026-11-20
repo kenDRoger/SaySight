@@ -122,6 +122,54 @@ export async function getFinding(id: string): Promise<Finding | undefined> {
   return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
 }
 
+export type Comment = { id: string; findingId: string; authorId: string; body: string; status: 'visible' | 'removed'; createdAt: string; removalReason: string | null };
+
+export async function createComment(input: { findingId: string; authorId: string; body: string }): Promise<Comment> {
+  if (!pool) throw new Error('database_required');
+  const comment: Comment = { id: randomUUID(), ...input, status: 'visible', createdAt: new Date().toISOString(), removalReason: null };
+  await pool.query('INSERT INTO comments (id, finding_id, author_id, body) VALUES ($1, $2, $3, $4)',
+    [comment.id, comment.findingId, comment.authorId, comment.body]);
+  return comment;
+}
+
+// Removed comments stay in the list with their text dropped, so the thread keeps its
+// shape and the removal reason is public.
+export async function listComments(findingId: string): Promise<Comment[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT c.id, c.finding_id, c.author_id, c.body, c.status, c.created_at,
+            (SELECT m.reason FROM comment_moderation m WHERE m.comment_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS removal_reason
+     FROM comments c WHERE c.finding_id = $1 ORDER BY c.created_at`,
+    [findingId],
+  );
+  return result.rows.map((row) => ({ id: row.id, findingId: row.finding_id, authorId: row.author_id,
+    body: row.status === 'removed' ? '' : row.body, status: row.status, createdAt: row.created_at.toISOString(),
+    removalReason: row.removal_reason ?? null }));
+}
+
+export async function getComment(id: string): Promise<{ id: string; status: 'visible' | 'removed' } | undefined> {
+  if (!pool) return undefined;
+  const result = await pool.query('SELECT id, status FROM comments WHERE id = $1', [id]);
+  const row = result.rows[0];
+  return row ? { id: row.id, status: row.status } : undefined;
+}
+
+export async function removeComment(input: { commentId: string; actorId: string; reason: string }): Promise<void> {
+  if (!pool) throw new Error('database_required');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const updated = await client.query("UPDATE comments SET status = 'removed' WHERE id = $1 AND status = 'visible' RETURNING id", [input.commentId]);
+    if (!updated.rows[0]) {
+      const exists = await client.query('SELECT 1 FROM comments WHERE id = $1', [input.commentId]);
+      throw new Error(exists.rows[0] ? 'comment_already_removed' : 'comment_not_found');
+    }
+    await client.query('INSERT INTO comment_moderation (id, comment_id, actor_id, reason) VALUES ($1, $2, $3, $4)',
+      [randomUUID(), input.commentId, input.actorId, input.reason]);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+}
+
 export type FindingTransition = { id: string; findingId: string; fromStatus: string; toStatus: string; actorId: string; reason: string; createdAt: string };
 
 export async function recordTransition(input: { findingId: string; fromStatus: string; toStatus: string; actorId: string; reason: string }): Promise<FindingTransition> {

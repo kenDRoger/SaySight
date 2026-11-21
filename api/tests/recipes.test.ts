@@ -215,7 +215,7 @@ test('runAllApplicable records an applicable recipe missing its required options
 
   assert.deepEqual(run.results.map((entry) => entry.recipe), ['summary', 'rank', 'distribution', 'change_over_time']);
   assert.deepEqual(run.skipped, [
-    { recipe: 'compare', reason: 'compare: options.periodA and options.periodB are required' },
+    { recipe: 'compare', reason: 'compare needs two periods; pass periodA and periodB' },
   ]);
 });
 

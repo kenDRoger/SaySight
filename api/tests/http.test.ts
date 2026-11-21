@@ -181,6 +181,26 @@ async function moveTo(id: string, cookie: string, status: string): Promise<Findi
   return (JSON.parse(text) as { finding: Finding }).finding;
 }
 
+// Creates a pinned release directly through the store so a run test does not need a
+// network fetch; the row shape mirrors what the pin route stores.
+async function insertPinnedReleaseForTest(releaseId: string, rows: Array<Record<string, unknown>>, schema: Array<{ name: string; type: string }>) {
+  const client = new Pool({ connectionString: databaseUrl });
+  try {
+    await client.query(
+      `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata)
+       VALUES ($1, $2, 'test', 'test', $1, 'test', 'test', 'current', $3) ON CONFLICT (id) DO NOTHING`,
+      [releaseId, `Run fixture ${releaseId}`, JSON.stringify({ schema: { columns: schema }, limitations: [], coverage: { fiscalYears: [] }, fields: [] })],
+    );
+    await client.query(
+      `INSERT INTO release_rows (release_id, row_number, data)
+       SELECT $1, t.ord, t.data FROM unnest($2::jsonb[]) WITH ORDINALITY AS t(data, ord) ON CONFLICT DO NOTHING`,
+      [releaseId, rows.map((row) => JSON.stringify(row))],
+    );
+  } finally {
+    await client.end();
+  }
+}
+
 before(async () => {
   databaseReachable = await tcpReachable('localhost', 5432);
   const port = await freePort();
@@ -1127,4 +1147,44 @@ test('two pinned releases join into prefixed rows with diagnostics and a schema'
   assert.equal(body.truncated, false);
   assert.deepEqual(body.schema.map((column) => column.name),
     ['year', 'amount', 'right.amount', 'right.region']);
+});
+
+// Runs over pinned releases (MVP-E E3c).
+
+test('a run over a pinned release produces insights and skips with reasons', async (t) => {
+  if (!ready(t)) return;
+  const releaseId = `release-run-${randomUUID()}`;
+  await insertPinnedReleaseForTest(releaseId, [
+    { year: 2022, agency: 'A', amount: 100 },
+    { year: 2023, agency: 'B', amount: 150 },
+    { year: 2024, agency: 'A', amount: 200 },
+  ], [{ name: 'year', type: 'integer' }, { name: 'agency', type: 'text' }, { name: 'amount', type: 'number' }]);
+
+  const response = await api('/api/v1/runs', { method: 'POST', body: { release_ids: [releaseId] } });
+  const text = await responseText(response);
+  assert.equal(response.status, 201, text);
+  const body = JSON.parse(text) as { run_id: string; insights: Array<{ recipe: string; status: string; result?: unknown }>; selection: { applicable: string[] } };
+  assert.ok(body.run_id);
+  const ok = body.insights.filter((insight) => insight.status === 'ok');
+  assert.ok(ok.length >= 4, `expected at least four insights, got ${ok.length}`);
+  assert.ok(ok.every((insight) => insight.result !== undefined), 'an ok insight has no result');
+  const rank = ok.find((insight) => insight.recipe === 'rank');
+  assert.deepEqual((rank?.result as Array<{ value: number }>)[0]?.value, 200, 'rank must measure amount, not year');
+
+  const stored = await responseJson<{ insights: Array<{ evidenceId: string | null }> }>(await api(`/api/v1/runs/${body.run_id}`));
+  assert.ok(stored.insights.length === body.insights.length);
+  assert.ok(stored.insights.every((insight) => insight.evidenceId === null), 'evidence must stay null until saved');
+});
+
+test('a run refuses releases without rows and unknown ids', async (t) => {
+  if (!ready(t)) return;
+  const missingRows = await api('/api/v1/runs', { method: 'POST', body: { release_ids: ['bettergov-gaa-coverage-2026-11-07'] } });
+  assert.equal(missingRows.status, 400);
+  assert.equal((await responseJson<{ error: string }>(missingRows)).error, 'release_not_pinned');
+
+  const badRequest = await api('/api/v1/runs', { method: 'POST', body: { release_ids: [] } });
+  assert.equal(badRequest.status, 400);
+
+  const unknownRun = await api(`/api/v1/runs/${randomUUID()}`);
+  assert.equal(unknownRun.status, 404);
 });

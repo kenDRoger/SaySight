@@ -245,7 +245,7 @@ export function changeOverTime(rows: Row[], columns: Column[], options: RecipeOp
 export function compare(rows: Row[], columns: Column[], options: RecipeOptions): RecipeResult {
   const { periodA, periodB } = options;
   if (periodA === undefined || periodB === undefined) {
-    throw new Error('compare: options.periodA and options.periodB are required');
+    throw new Error('compare needs two periods; pass periodA and periodB');
   }
   const year = resolveYearColumn('compare', columns);
   const measure = resolveMeasure('compare', columns, options, year);

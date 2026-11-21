@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, countReleaseRows, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, getReleaseRowSchema, getReleaseRows, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveReleaseRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, getRun, insertInsight, insertRun, createSavedView, countReleaseRows, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, getReleaseRowSchema, getReleaseRows, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveReleaseRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
 import { inferReleaseSchema, licenceStatus, pinSummary, releaseKey } from './pin.js';
 import { executeJoin, joinedSchema, limitJoinedRows } from './joinRun.js';
 import { connectors, getConnector } from './connectors.js';
@@ -14,6 +14,8 @@ import { checkRemoval, validateCommentBody, validateRemovalReason } from './comm
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
 import { validateMetadata, type PublicationMetadata } from './metadata.js';
 import { joinLimitations, planJoin, type Relationship } from './join.js';
+import { runAllApplicable, type Column as RecipeColumn, type RecipeOptions } from './recipes.js';
+import { selectInsights } from './insights.js';
 import { planJoin as planTwoWayJoin, type Aggregation, type Column } from './joinPlan.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { validateClaim } from './claim.js';
@@ -199,6 +201,21 @@ const columnsFromSchema = (schema: Record<string, unknown> | undefined): Column[
 };
 const grainFromSchema = (schema: Record<string, unknown> | undefined): string =>
   typeof schema?.grain === 'string' && schema.grain.trim() ? schema.grain : 'row';
+
+// A pinned release stores its schema as { columns: [...] }; anything else means the
+// rows cannot be typed, which is reported instead of guessed.
+function schemaColumns(schema: Record<string, unknown> | undefined): RecipeColumn[] {
+  const columns = schema?.columns;
+  if (!Array.isArray(columns)) return [];
+  return columns.flatMap((column) => {
+    if (!column || typeof column !== 'object') return [];
+    const entry = column as { name?: unknown; type?: unknown };
+    if (typeof entry.name !== 'string') return [];
+    const type = entry.type === 'integer' || entry.type === 'number' || entry.type === 'text' || entry.type === 'date' || entry.type === 'boolean'
+      ? entry.type : 'text';
+    return [{ name: entry.name, type }];
+  });
+}
 
 const uploads = createGate(maxConcurrentUploads);
 
@@ -593,6 +610,72 @@ const server = createServer((request, response) => {
           summary: pinSummary(connector.id, datasetId, bytes.length, status) });
       } catch { json(response, 503, { error: 'pin_unavailable' }); }
     }).catch(() => json(response, 503, { error: 'pin_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'POST' && request.url === '/api/v1/runs') {
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      let payload: { release_ids?: unknown; left_key?: unknown; right_key?: unknown; filters?: unknown; options?: unknown };
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const releaseIds = Array.isArray(payload.release_ids) ? payload.release_ids.filter((id): id is string => typeof id === 'string') : [];
+      if (releaseIds.length < 1 || releaseIds.length > 2) { json(response, 400, { error: 'release_ids_required', message: 'a run analyses one release or joins exactly two' }); return; }
+      const rowsByRelease = await Promise.all(releaseIds.map(async (id) => ({ id, rows: await getReleaseRows(id, 50_000) })));
+      for (const entry of rowsByRelease) {
+        if (!entry.rows.length) { json(response, 400, { error: 'release_not_pinned', message: `release ${entry.id} has no stored rows; pin it first` }); return; }
+      }
+
+      let rows: Array<Record<string, unknown>>;
+      let columns: RecipeColumn[];
+      if (rowsByRelease.length === 2) {
+        if (typeof payload.left_key !== 'string' || typeof payload.right_key !== 'string') {
+          json(response, 400, { error: 'join_keys_required', message: 'a two-release run needs left_key and right_key' });
+          return;
+        }
+        const [left, right] = rowsByRelease;
+        const leftColumns = schemaColumns(await getReleaseRowSchema(left.id));
+        const rightColumns = schemaColumns(await getReleaseRowSchema(right.id));
+        const planned = planJoin({ relationship: { id: 'ad-hoc', primaryReleaseId: left.id, relatedReleaseId: right.id,
+          joinKeys: [payload.left_key], status: 'validated' }, primaryReleaseId: left.id, relatedReleaseId: right.id });
+        if (!planned.ok) { json(response, 409, { error: planned.error }); return; }
+        const plan = planTwoWayJoin({ left: { label: left.id, columns: leftColumns, rows: left.rows, grain: 'row' },
+          right: { label: right.id, columns: rightColumns, rows: right.rows, grain: 'row' },
+          leftKey: payload.left_key, rightKey: payload.right_key });
+        if (!plan.ok) { json(response, 400, { error: plan.error, message: plan.message }); return; }
+        const joined = executeJoin(plan.plan, left.rows, right.rows);
+        const limited = limitJoinedRows(joined.rows);
+        if (limited.rows.length !== joined.rows.length) { json(response, 413, { error: 'join_too_large', rows: joined.rows.length, limit: 50_000 }); return; }
+        rows = limited.rows;
+        columns = joinedSchema(leftColumns, rightColumns, payload.left_key) as RecipeColumn[];
+      } else {
+        rows = rowsByRelease[0].rows;
+        columns = schemaColumns(await getReleaseRowSchema(rowsByRelease[0].id));
+      }
+
+      const selection = selectInsights(columns);
+      const options = (payload.options && typeof payload.options === 'object' ? payload.options : {}) as RecipeOptions;
+      const runId = await insertRun({ connectorIds: [], releaseIds, filters: (payload.filters && typeof payload.filters === 'object' ? payload.filters : {}) as Record<string, unknown>, selection });
+      const executed = runAllApplicable(selection, rows, columns, options);
+      const insights = [];
+      for (const result of executed.results) {
+        const id = await insertInsight({ runId, recipe: result.recipe, releaseId: releaseIds[0]!, recipeVersion: result.recipeVersion, status: 'ok' });
+        insights.push({ id, recipe: result.recipe, status: 'ok', result: result.result, calculation: result.calculation, warnings: result.warnings, evidence_id: null });
+      }
+      for (const skip of executed.skipped) {
+        const id = await insertInsight({ runId, recipe: skip.recipe, releaseId: releaseIds[0]!, recipeVersion: 'generic-v1', status: 'skipped', reason: skip.reason });
+        insights.push({ id, recipe: skip.recipe, status: 'skipped', reason: skip.reason });
+      }
+      json(response, 201, { run_id: runId, selection, insights,
+        summary: `${insights.filter((insight) => insight.status === 'ok').length} insights produced, ${executed.skipped.length} skipped` });
+    }).catch(() => json(response, 503, { error: 'run_unavailable' }));
+    return;
+  }
+
+  const runMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/runs\/([^/]+)$/) : undefined;
+  if (runMatch) {
+    getRun(runMatch[1]).then((found) => found ? json(response, 200, found) : json(response, 404, { error: 'run_not_found' }))
+      .catch(() => json(response, 503, { error: 'run_unavailable' }));
     return;
   }
 

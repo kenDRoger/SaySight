@@ -16,8 +16,12 @@ export type Selection = {
   skipped: Array<{ recipe: string; reason: string }>;
 };
 
-export const numericColumns = (columns: Column[]): Column[] =>
-  columns.filter(({ type }) => type === 'integer' || type === 'number');
+export const numericColumns = (columns: Column[]): Column[] => {
+  // The ordered year column is numeric but is a period, not a measure; leaving it in
+  // makes "rank" and "summary" claim to apply to a dataset with nothing to measure.
+  const year = orderedYearColumn(columns)?.name;
+  return columns.filter(({ name, type }) => (type === 'integer' || type === 'number') && name !== year);
+};
 
 export const categoricalColumns = (columns: Column[]): Column[] =>
   columns.filter(({ type }) => type === 'text' || type === 'boolean');

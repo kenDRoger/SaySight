@@ -134,3 +134,9 @@ test('runSummary counts partial failures and says they are listed with their rea
   assert.match(summary.sentence, /3 insights were produced/);
   assert.match(summary.sentence, /1 insight failed and is listed with its reason/);
 });
+
+test('selection does not treat the year column as a measure', () => {
+  const selection = selectInsights([{ name: 'year', type: 'integer' }]);
+  assert.deepEqual(selection.applicable, []);
+  assert.match(selection.skipped.find((entry) => entry.recipe === 'rank')?.reason ?? '', /no numeric column to rank/);
+});

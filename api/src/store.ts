@@ -242,6 +242,45 @@ export async function getReleaseRows(releaseId: string, limit?: number): Promise
   return result.rows.map((row) => row.data as Record<string, unknown>);
 }
 
+export type RunRecord = { id: string; connectorIds: string[]; releaseIds: string[]; filters: Record<string, unknown>; selection: unknown; createdAt: string };
+export type InsightRow = { id: string; runId: string; recipe: string; releaseId: string | null; recipeVersion: string; status: 'ok' | 'failed' | 'skipped'; evidenceId: string | null; reason: string; createdAt: string };
+
+export async function insertRun(input: { connectorIds: string[]; releaseIds: string[]; filters: Record<string, unknown>; selection: unknown }): Promise<string> {
+  if (!pool) throw new Error('database_required');
+  const id = randomUUID();
+  await pool.query('INSERT INTO runs (id, connector_ids, release_ids, filters, selection) VALUES ($1, $2, $3, $4, $5)',
+    [id, JSON.stringify(input.connectorIds), JSON.stringify(input.releaseIds), JSON.stringify(input.filters), JSON.stringify(input.selection)]);
+  return id;
+}
+
+export async function insertInsight(input: { runId: string; recipe: string; releaseId: string; recipeVersion: string; status: 'ok' | 'failed' | 'skipped'; evidenceId?: string | null; reason?: string }): Promise<string> {
+  if (!pool) throw new Error('database_required');
+  const id = randomUUID();
+  await pool.query('INSERT INTO insights (id, run_id, recipe, dataset_release_id, recipe_version, status, evidence_id, reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+    [id, input.runId, input.recipe, input.releaseId, input.recipeVersion, input.status, input.evidenceId ?? null, input.reason ?? '']);
+  return id;
+}
+
+export async function attachInsightEvidence(insightId: string, evidenceId: string): Promise<void> {
+  if (!pool) throw new Error('database_required');
+  const updated = await pool.query('UPDATE insights SET evidence_id = $2 WHERE id = $1 AND evidence_id IS NULL RETURNING id', [insightId, evidenceId]);
+  if (!updated.rows[0]) throw new Error('evidence_already_attached');
+}
+
+export async function getRun(id: string): Promise<{ run: RunRecord; insights: InsightRow[] } | undefined> {
+  if (!pool) return undefined;
+  const runResult = await pool.query('SELECT id, connector_ids, release_ids, filters, selection, created_at FROM runs WHERE id = $1', [id]);
+  const row = runResult.rows[0];
+  if (!row) return undefined;
+  const insightResult = await pool.query('SELECT id, run_id, recipe, dataset_release_id, recipe_version, status, evidence_id, reason, created_at FROM insights WHERE run_id = $1 ORDER BY created_at, recipe', [id]);
+  return {
+    run: { id: row.id, connectorIds: row.connector_ids, releaseIds: row.release_ids, filters: row.filters, selection: row.selection, createdAt: row.created_at.toISOString() },
+    insights: insightResult.rows.map((insight) => ({ id: insight.id, runId: insight.run_id, recipe: insight.recipe,
+      releaseId: insight.dataset_release_id, recipeVersion: insight.recipe_version, status: insight.status,
+      evidenceId: insight.evidence_id, reason: insight.reason, createdAt: insight.created_at.toISOString() })),
+  };
+}
+
 export async function countReleaseRows(releaseId: string): Promise<number> {
   if (!pool) return 0;
   const result = await pool.query('SELECT count(*)::int AS total FROM release_rows WHERE release_id = $1', [releaseId]);

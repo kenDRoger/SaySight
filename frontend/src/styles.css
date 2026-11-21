@@ -69,3 +69,18 @@ th, td { text-align: left; vertical-align: top; padding: 0.4rem 0.5rem; border-b
 .chart-figure figcaption { margin-top: .75rem; font-size: .9rem; line-height: 1.45; overflow-wrap: anywhere; }
 .chart-figure .chart-note { display: block; margin-top: .35rem; color: #53636e; }
 .chart-figure rect:focus-visible, .chart-figure circle:focus-visible { outline: none; stroke: #17212b; stroke-width: 3px; }
+
+/* MVP-E interface: sources, dataset picks, and per-insight run cards. */
+.connector-list, .dataset-list { display: grid; gap: 1rem; margin: 1rem 0; padding-left: 1.25rem; }
+.connector-list li, .dataset-list li { overflow-wrap: anywhere; }
+.dataset-pick { display: flex; align-items: center; gap: .5rem; }
+.dataset-pick input[type='checkbox'] { min-height: auto; width: 1.15rem; height: 1.15rem; padding: 0; accent-color: #256b4a; }
+.selected-columns { margin-top: .75rem; overflow-wrap: anywhere; }
+.run-selection { list-style: decimal; margin: 1rem 0; padding-left: 1.25rem; overflow-wrap: anywhere; }
+.insight-list { display: grid; gap: 1rem; margin: 1rem 0; }
+.insight-card { padding: 1rem; background: white; border: 1px solid #d9e1e5; border-radius: .75rem; overflow-wrap: anywhere; }
+.insight-card h4 { margin: 0 0 .5rem; }
+/* Tailwind preflight strips list markers; these lists carry data, so restore them. */
+.insight-card ul { list-style: disc; padding-left: 1.25rem; }
+.insight-card ol { list-style: decimal; padding-left: 1.25rem; }
+.next-steps { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #d9e1e5; }

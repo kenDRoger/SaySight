@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button } from '@bettergov/kapwa/button';
 import { Card } from '@bettergov/kapwa/card';
@@ -22,7 +22,17 @@ type Dataset = {
   region?: string | null;
   freshnessStatus?: string;
   lastCheckedAt?: string | null;
+  licenceStatus?: string;
+  attribution?: string;
+  metadata?: { schema?: { columns?: SchemaColumn[] } };
 };
+
+type SchemaColumn = { name: string; type?: string };
+type ConnectorCheck = { status?: string; httpStatus?: number | null; datasetCount?: number | null; message?: string; createdAt?: string };
+type Connector = { id: string; name: string; protocol: string; kind: 'api' | 'scraped'; baseUrl?: string; externalBenchmark: boolean; last_check?: ConnectorCheck | null; lastCheck?: ConnectorCheck | null };
+type RunInsight = { id: string; recipe: string; status: 'ok' | 'skipped'; result?: unknown; calculation?: string; warnings?: string[]; reason?: string; evidence_id?: string | null };
+type RunSelection = { applicable: string[]; skipped: Array<{ recipe: string; reason: string }> };
+type RunResponse = { run_id: string; selection: RunSelection; insights: RunInsight[]; summary: string };
 
 type Agency = { id: string; name: string; website: string };
 type SavedView = { id: string; name: string; datasetReleaseId: string; filters: Record<string, unknown>; createdAt: string };
@@ -60,6 +70,80 @@ const isReviewer = (role: string | undefined) => role === 'reviewer' || role ===
 const isTestFixture = (release: Dataset) => /fixture/i.test(release.name) || release.checksum === 'test-only-checksum';
 const failureMessage = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
 const failureStatus = (reason: unknown) => reason instanceof Error && 'status' in reason ? Number((reason as ApiFailure).status) : 0;
+
+// S10a: with no licence information the state is unconfirmed and says so in plain
+// words; publication is not blocked, so the risk is disclosed rather than hidden.
+const licenceLabel = (release: Dataset): string => {
+  if (release.licenceStatus === 'unconfirmed') return 'licence not confirmed — redistribution terms unknown';
+  if (release.licenceStatus === 'confirmed') return 'licence confirmed';
+  if (release.licenceStatus === 'not-stated') return 'licence not stated by the source';
+  return release.reuseTerms ? `licence: ${release.reuseTerms}` : 'licence not confirmed — redistribution terms unknown';
+};
+
+// Join keys come from the stored schema; a release without one falls back to the
+// catalog's field definitions so a key can still be chosen.
+const releaseColumns = (release: Dataset): SchemaColumn[] => {
+  const schema = release.metadata?.schema?.columns;
+  if (schema && schema.length > 0) return schema;
+  return (release.fields ?? []).map((field) => ({ name: field.name, type: field.type }));
+};
+
+const pickId = (release: Dataset): string => release.id ?? release.releaseId;
+
+const resultText = (value: unknown): string => (value === null || value === undefined ? '—' : String(value));
+
+// Each recipe returns its own result shape; anything unexpected falls back to raw
+// JSON instead of throwing inside the render.
+const renderInsightResult = (recipe: string, result: unknown): ReactNode => {
+  if (recipe === 'summary' && result && typeof result === 'object' && !Array.isArray(result)) {
+    const data = result as { rows?: unknown; numeric?: unknown; categorical?: unknown };
+    const numeric = Array.isArray(data.numeric) ? data.numeric as Array<{ column?: unknown; min?: unknown; max?: unknown; mean?: unknown; available?: unknown }> : [];
+    const categorical = Array.isArray(data.categorical) ? data.categorical as Array<{ column?: unknown; distinct?: unknown }> : [];
+    return <dl className="diagnostics">
+      <div><dt>Rows</dt><dd>{resultText(data.rows)}</dd></div>
+      {numeric.map((entry, index) => <div key={`numeric-${index}`}><dt>{resultText(entry.column)}</dt><dd>min {resultText(entry.min)} · max {resultText(entry.max)} · mean {resultText(entry.mean)} ({resultText(entry.available)} values)</dd></div>)}
+      {categorical.map((entry, index) => <div key={`categorical-${index}`}><dt>{resultText(entry.column)}</dt><dd>{resultText(entry.distinct)} distinct values</dd></div>)}
+    </dl>;
+  }
+  if (recipe === 'rank' && Array.isArray(result)) {
+    const entries = result as Array<{ label?: unknown; value?: unknown }>;
+    return <ol className="insight-rank">{entries.map((entry, index) => <li key={index}>{resultText(entry.label)} — {resultText(entry.value)}</li>)}</ol>;
+  }
+  if (recipe === 'distribution' && result && typeof result === 'object' && !Array.isArray(result)) {
+    const data = result as { field?: unknown; groups?: unknown };
+    const groups = Array.isArray(data.groups) ? data.groups as Array<{ value?: unknown; count?: unknown; percentage?: unknown }> : [];
+    return <>
+      <p className="muted">Grouped by {resultText(data.field)}</p>
+      <ul>{groups.map((group, index) => <li key={index}>{resultText(group.value)}: {resultText(group.count)} rows ({resultText(group.percentage)}%)</li>)}</ul>
+    </>;
+  }
+  if (recipe === 'change_over_time' && Array.isArray(result)) {
+    const points = result as Array<{ period?: unknown; value?: unknown; changeFromPrevious?: unknown; percentChangeFromPrevious?: unknown }>;
+    return <div className="table-scroll" role="region" aria-label="Change over time result" tabIndex={0}>
+      <table>
+        <caption>Change over time</caption>
+        <thead><tr><th scope="col">Period</th><th scope="col">Value</th><th scope="col">Change from previous</th><th scope="col">Percent change</th></tr></thead>
+        <tbody>{points.map((point, index) => <tr key={index}><th scope="row">{resultText(point.period)}</th><td>{resultText(point.value)}</td><td>{resultText(point.changeFromPrevious)}</td><td>{resultText(point.percentChangeFromPrevious)}</td></tr>)}</tbody>
+      </table>
+    </div>;
+  }
+  if (recipe === 'compare' && result && typeof result === 'object' && !Array.isArray(result)) {
+    const data = result as { periodA?: unknown; periodB?: unknown; valueA?: unknown; valueB?: unknown; difference?: unknown; percentChange?: unknown };
+    return <div className="table-scroll" role="region" aria-label="Compare result" tabIndex={0}>
+      <table>
+        <caption>Compare {resultText(data.periodA)} against {resultText(data.periodB)}</caption>
+        <thead><tr><th scope="col">Measure</th><th scope="col">Value</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">{resultText(data.periodA)}</th><td>{resultText(data.valueA)}</td></tr>
+          <tr><th scope="row">{resultText(data.periodB)}</th><td>{resultText(data.valueB)}</td></tr>
+          <tr><th scope="row">Difference ({resultText(data.periodB)} − {resultText(data.periodA)})</th><td>{resultText(data.difference)}</td></tr>
+          <tr><th scope="row">Percent change</th><td>{resultText(data.percentChange)}</td></tr>
+        </tbody>
+      </table>
+    </div>;
+  }
+  return <details><summary>Raw result JSON</summary><pre>{JSON.stringify(result, null, 2)}</pre></details>;
+};
 
 // Pagination is opt-in: an untouched control sends no query parameter, so the
 // API default response shape is preserved. Filters follow the same rule.
@@ -132,6 +216,24 @@ function App() {
   const [removalReasons, setRemovalReasons] = useState<Record<string, string>>({});
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [releases, setReleases] = useState<Dataset[]>([]);
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasetsError, setDatasetsError] = useState('');
+  const [connectors, setConnectors] = useState<Connector[]>([]);
+  const [connectorsError, setConnectorsError] = useState('');
+  const [checkResults, setCheckResults] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [checkingId, setCheckingId] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [leftKey, setLeftKey] = useState('');
+  const [rightKey, setRightKey] = useState('');
+  const [periodA, setPeriodA] = useState('');
+  const [periodB, setPeriodB] = useState('');
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState<RunResponse>();
+  const [runError, setRunError] = useState('');
+  const [runClaim, setRunClaim] = useState('');
+  const [savingRun, setSavingRun] = useState(false);
+  const [saveStatus, setSaveStatus] = useState('');
+  const [saveError, setSaveError] = useState('');
   const [catalogQuery, setCatalogQuery] = useState('');
   const [catalogAgency, setCatalogAgency] = useState('');
   const [catalogFreshness, setCatalogFreshness] = useState('');
@@ -161,6 +263,10 @@ function App() {
   const agencyName = (id: string | null | undefined) => agencies.find((item) => item.id === id)?.name ?? id ?? 'Unlisted agency';
   // Queue filters ride along with pagination; untouched controls add no parameter.
   const queueQuery = () => pageQuery(queueLimit, queueOffset, { status: queueFilterStatus, impact: queueFilterImpact, q: queueFilterQuery.trim() });
+  // Selection order is join order: the first pick is the left side of the join.
+  const selectedReleases = selectedIds.map((id) => datasets.find((item) => pickId(item) === id)).filter((item): item is Dataset => item !== undefined);
+  const runEvidenceId = runResult?.insights.find((insight) => insight.evidence_id)?.evidence_id ?? '';
+  const canRun = selectedReleases.length > 0 && (selectedReleases.length === 1 || (Boolean(leftKey) && Boolean(rightKey)));
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -180,6 +286,25 @@ function App() {
       if (!query) setDataset(list.find((item: Dataset) => item.publisher === 'BetterGovPH') ?? list[0]);
     }).catch((reason: unknown) => { setReleases([]); setCatalogError(failureMessage(reason, 'The catalog is currently unavailable.')); });
   }, [catalogQuery, catalogAgency, catalogFreshness]);
+
+  // MVP-E loads its own list once so catalog search never reshuffles the selection.
+  useEffect(() => {
+    fetch(`${apiBase}/api/v1/connectors`).then(async (response) => {
+      const body = await response.json() as { connectors?: Connector[] };
+      if (!response.ok) throw new Error('Sources are currently unavailable.');
+      return body.connectors ?? [];
+    }).then((list) => { setConnectors(list); setConnectorsError(''); })
+      .catch((reason: unknown) => { setConnectors([]); setConnectorsError(failureMessage(reason, 'Sources are currently unavailable.')); });
+  }, []);
+
+  useEffect(() => {
+    fetch(`${apiBase}/api/v1/datasets`).then(async (response) => {
+      const body = await response.json() as { datasets?: Dataset[] };
+      if (!response.ok) throw new Error('The catalog is currently unavailable.');
+      return body.datasets ?? [];
+    }).then((list) => { setDatasets(list); setDatasetsError(''); })
+      .catch((reason: unknown) => { setDatasets([]); setDatasetsError(failureMessage(reason, 'The catalog is currently unavailable.')); });
+  }, []);
 
   useEffect(() => {
     fetch(`${apiBase}/api/v1/agencies`).then((response) => { if (!response.ok) throw new Error('Agencies unavailable'); return response.json(); }).then((body: { agencies?: Agency[] }) => setAgencies(body.agencies ?? [])).catch(() => setAgencies([]));
@@ -399,6 +524,69 @@ function App() {
     } finally { setJoining(false); }
   }
 
+  function toggleDataset(id: string) {
+    const next = selectedIds.includes(id) ? selectedIds.filter((item) => item !== id)
+      : selectedIds.length < 2 ? [...selectedIds, id] : selectedIds;
+    setSelectedIds(next);
+    // A key chosen for a side that is no longer selected would join the wrong columns.
+    const stillValid = (release: Dataset | undefined, key: string) =>
+      Boolean(key) && release !== undefined && releaseColumns(release).some((column) => column.name === key);
+    if (!stillValid(datasets.find((item) => pickId(item) === next[0]), leftKey)) setLeftKey('');
+    if (!stillValid(datasets.find((item) => pickId(item) === next[1]), rightKey)) setRightKey('');
+  }
+
+  async function checkConnector(id: string) {
+    setCheckingId(id);
+    setCheckResults((current) => ({ ...current, [id]: { ok: true, text: 'Checking…' } }));
+    try {
+      const response = await fetch(`${apiBase}/api/v1/connectors/${encodeURIComponent(id)}/check`, { method: 'POST', credentials: 'same-origin' });
+      const body = await response.json().catch(() => ({})) as { status?: string; dataset_count?: number | null; http_status?: number | null; message?: string; error?: string };
+      // A 502 failure carries its message in the same shape, so it is shown verbatim.
+      const text = body.message || (body.status === 'ok'
+        ? `ok — ${body.dataset_count ?? 0} datasets · HTTP ${body.http_status ?? 'unknown'}`
+        : body.error || `check failed (HTTP ${response.status})`);
+      setCheckResults((current) => ({ ...current, [id]: { ok: response.ok && body.status !== 'failed', text } }));
+    } catch {
+      setCheckResults((current) => ({ ...current, [id]: { ok: false, text: 'The check could not reach the API.' } }));
+    } finally { setCheckingId(''); }
+  }
+
+  async function submitRun(event: FormEvent) {
+    event.preventDefault();
+    if (!canRun) return;
+    setRunning(true); setRunError(''); setRunResult(undefined); setSaveStatus(''); setSaveError(''); setRunClaim('');
+    const payload: { release_ids: string[]; left_key?: string; right_key?: string; options?: Record<string, string> } = { release_ids: selectedReleases.map(pickId) };
+    if (selectedReleases.length === 2) { payload.left_key = leftKey; payload.right_key = rightKey; }
+    const options: Record<string, string> = {};
+    if (periodA) options.periodA = periodA;
+    if (periodB) options.periodB = periodB;
+    if (Object.keys(options).length > 0) payload.options = options;
+    try {
+      const response = await fetch(`${apiBase}/api/v1/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(payload) });
+      const body = await response.json().catch(() => ({})) as { message?: unknown; error?: unknown };
+      if (!response.ok) {
+        setRunError(typeof body.message === 'string' && body.message
+          ? body.message
+          : typeof body.error === 'string' && body.error ? body.error : `The run was refused (HTTP ${response.status}).`);
+        return;
+      }
+      setRunResult(body as RunResponse);
+    } catch {
+      setRunError('The run could not reach the API.');
+    } finally { setRunning(false); }
+  }
+
+  async function saveRunFinding() {
+    if (!runEvidenceId) return;
+    setSavingRun(true); setSaveError(''); setSaveStatus('');
+    try {
+      const created = await apiRequest<Finding>('/api/v1/findings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ evidence_id: runEvidenceId, claim: runClaim }) });
+      setSaveStatus(`Saved ${created.id} as ${created.status}.`);
+    } catch (reason) {
+      setSaveError(failureStatus(reason) === 401 ? 'Sign in first to save a finding.' : failureMessage(reason, 'Could not save the finding.'));
+    } finally { setSavingRun(false); }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault(); setLoading(true); setError(''); setAnalysis(undefined); setValidationFailure(undefined);
     try {
@@ -473,6 +661,123 @@ function App() {
         </li>)}</ul>}
         </details>
       </> : <p>Loading catalog…</p>}
+      </Card>
+    </section>
+    <section aria-labelledby="sources-heading">
+      <Card className="card">
+      <h2 id="sources-heading">Sources</h2>
+      <p className="muted">Every portal connector SaySight reads, with its kind and the latest check recorded in the connector log. An unreadable portal stays listed with its status and reason instead of disappearing.</p>
+      {connectorsError && <p role="alert" className="error">{connectorsError}</p>}
+      {connectors.length === 0 && !connectorsError && <p className="muted">Loading sources…</p>}
+      <ul className="connector-list">
+        {connectors.map((connector) => {
+          const check = connector.last_check ?? connector.lastCheck;
+          const result = checkResults[connector.id];
+          return <li key={connector.id}>
+            <h3>{connector.name} <span className="badge">{connector.kind === 'scraped' ? 'Scraped' : 'API'}</span></h3>
+            {connector.externalBenchmark && <p className="muted">External comparison data — not Philippine government data.</p>}
+            <p>Last check: {check
+              ? <><strong>{check.status ?? 'unknown status'}</strong>{check.datasetCount !== null && check.datasetCount !== undefined && <> · {check.datasetCount} datasets</>}{typeof check.httpStatus === 'number' && <> · HTTP {check.httpStatus}</>}{check.message && <> — {check.message}</>}</>
+              : 'none recorded'}</p>
+            {maintainer && <Button type="button" variant="outline" size="md" onClick={() => checkConnector(connector.id)} disabled={Boolean(checkingId)} isLoading={checkingId === connector.id}>{checkingId === connector.id ? 'Checking…' : 'Check'}</Button>}
+            {result && <p role={result.ok ? 'status' : 'alert'} className={result.ok ? 'muted' : 'error'}>{result.text}</p>}
+          </li>;
+        })}
+      </ul>
+      </Card>
+    </section>
+    <section aria-labelledby="picks-heading">
+      <Card className="card">
+      <h2 id="picks-heading">Datasets</h2>
+      <p className="muted">Pick one release to analyse on its own, or two releases to join. At most two are selected at a time; click a selected release again to drop it.</p>
+      {datasetsError && <p role="alert" className="error">{datasetsError}</p>}
+      {datasets.length === 0 && !datasetsError && <p className="muted">Loading datasets…</p>}
+      <ul className="dataset-list">
+        {datasets.map((release) => {
+          const id = pickId(release);
+          const checked = selectedIds.includes(id);
+          return <li key={id}>
+            <div className="dataset-pick">
+              <input id={`pick-${id}`} type="checkbox" checked={checked} disabled={!checked && selectedIds.length >= 2} onChange={() => toggleDataset(id)} />
+              <Label htmlFor={`pick-${id}`}>{release.name}</Label>
+            </div>
+            <p className="muted">Agency: {agencyName(release.agencyId)} · Region: {release.region || '—'} · Freshness: <strong>{release.freshnessStatus || 'unknown'}</strong> · {licenceLabel(release)}</p>
+          </li>;
+        })}
+      </ul>
+      {selectedReleases.length > 0 && <h3>Columns of the selected releases</h3>}
+      {selectedReleases.map((release) => {
+        const columns = release.metadata?.schema?.columns ?? [];
+        return <div className="selected-columns" key={pickId(release)}>
+          <h4>{release.name}</h4>
+          {columns.length > 0
+            ? <div className="table-scroll" role="region" aria-label={`Stored schema columns of ${release.name}`} tabIndex={0}>
+                <table>
+                  <caption>Stored schema columns of {release.name}</caption>
+                  <thead><tr><th scope="col">Column</th><th scope="col">Type</th></tr></thead>
+                  <tbody>{columns.map((column) => <tr key={column.name}><th scope="row">{column.name}</th><td>{column.type || 'text'}</td></tr>)}</tbody>
+                </table>
+              </div>
+            : <p className="muted">no stored schema</p>}
+        </div>;
+      })}
+      </Card>
+    </section>
+    <section aria-labelledby="insights-heading">
+      <Card className="card">
+      <h2 id="insights-heading">Run insights</h2>
+      <p className="muted">Runs every recipe the selected data supports and lists the rest with the requirement each failed. A run reads the data live and writes no evidence until an analysis is saved.</p>
+      {selectedReleases.length > 0 && <ol className="run-selection">
+        {selectedReleases.map((release, index) => <li key={pickId(release)}>{index === 0 ? 'Left' : 'Right'}: {release.name}</li>)}
+      </ol>}
+      <form onSubmit={submitRun}>
+        {selectedReleases.length === 2 && <>
+          <div className="form-field"><Label htmlFor="run-left-key">Join key from the left release ({selectedReleases[0].name})</Label><select id="run-left-key" value={leftKey} onChange={(event) => setLeftKey(event.target.value)}><option value="">Choose a column</option>{releaseColumns(selectedReleases[0]).map((column) => <option key={column.name} value={column.name}>{column.name} ({column.type ?? 'unknown type'})</option>)}</select></div>
+          <div className="form-field"><Label htmlFor="run-right-key">Join key from the right release ({selectedReleases[1].name})</Label><select id="run-right-key" value={rightKey} onChange={(event) => setRightKey(event.target.value)}><option value="">Choose a column</option>{releaseColumns(selectedReleases[1]).map((column) => <option key={column.name} value={column.name}>{column.name} ({column.type ?? 'unknown type'})</option>)}</select></div>
+        </>}
+        <div className="form-field"><Label htmlFor="run-period-a">First period for compare (optional)</Label><Input id="run-period-a" value={periodA} onChange={(event) => setPeriodA(event.target.value)} placeholder="e.g. 2024" /></div>
+        <div className="form-field"><Label htmlFor="run-period-b">Second period for compare (optional)</Label><Input id="run-period-b" value={periodB} onChange={(event) => setPeriodB(event.target.value)} placeholder="e.g. 2025" /></div>
+        <Button type="submit" variant="primary" size="md" isLoading={running} disabled={running || !canRun}>{running ? 'Running…' : 'Run insights'}</Button>
+      </form>
+      {running && <p role="status">Running insights…</p>}
+      {datasets.length > 0 && !canRun && !running && <p className="muted">{selectedReleases.length === 0
+        ? 'Select at least one dataset above to run.'
+        : selectedReleases.some((release) => releaseColumns(release).length === 0)
+          ? 'A selected release exposes no columns, so its join keys cannot be chosen.'
+          : 'Choose a join key from each side to enable the run.'}</p>}
+      {runError && <p role="alert" className="error">{runError}</p>}
+      {runResult && <p role="status">{runResult.summary}</p>}
+      {runResult && <>
+        <h3>Insights</h3>
+        <div className="insight-list">
+          {runResult.insights.map((insight) => <article className="insight-card" key={insight.id}>
+            <h4>{insight.recipe}</h4>
+            <p>Status: <strong>{insight.status}</strong></p>
+            {insight.status === 'skipped'
+              ? <p><strong>Skipped:</strong> {insight.reason || 'no reason reported.'}</p>
+              : <>
+                  <p><strong>Calculation:</strong> {insight.calculation || '—'}</p>
+                  {insight.warnings && insight.warnings.length > 0 && <ul>{insight.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
+                  {renderInsightResult(insight.recipe, insight.result)}
+                </>}
+          </article>)}
+        </div>
+        <div className="next-steps">
+          <h3>Next steps</h3>
+          {runEvidenceId
+            ? <>
+                <div className="form-field"><Label htmlFor="run-claim">Claim</Label><textarea id="run-claim" required minLength={20} maxLength={1000} value={runClaim} onChange={(event) => setRunClaim(event.target.value)} placeholder="State what a reviewer should verify about this result." /></div>
+                <Button type="button" variant="outline" size="md" onClick={saveRunFinding} disabled={savingRun}>Save as unverified finding</Button>
+              </>
+            : <>
+                <Button type="button" variant="outline" size="md" disabled>Save as unverified finding</Button>
+                <p className="muted">No evidence exists for this run yet, so saving is unavailable: evidence is created only when the analysis is saved.</p>
+              </>}
+          {saveStatus && <p role="status" className="muted">{saveStatus}</p>}
+          {saveError && <p role="alert" className="error">{saveError}</p>}
+          <p><a href={`${apiBase}/api/v1/runs/${runResult.run_id}`}>View this run's public JSON</a></p>
+        </div>
+      </>}
       </Card>
     </section>
     <section aria-labelledby="analysis-heading">

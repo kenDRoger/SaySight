@@ -1186,3 +1186,15 @@ test('a run refuses releases without rows and unknown ids', async (t) => {
   const unknownRun = await api(`/api/v1/runs/${randomUUID()}`);
   assert.equal(unknownRun.status, 404);
 });
+
+test('the catalog exposes licence state and stored schema for pinned releases', async (t) => {
+  if (!ready(t)) return;
+  const releaseId = `release-catalog-${randomUUID()}`;
+  await insertPinnedReleaseForTest(releaseId, [{ year: 2024, amount: 10 }], [{ name: 'year', type: 'integer' }, { name: 'amount', type: 'number' }]);
+  const { datasets } = await responseJson<{ datasets: Array<{ id: string; licenceStatus?: string; schema?: { columns?: unknown[] }; attribution?: string }> }>(await api('/api/v1/datasets'));
+  const pinned = datasets.find((dataset) => dataset.id === releaseId);
+  assert.ok(pinned, 'pinned release is missing from the catalog');
+  assert.equal(pinned.licenceStatus, 'unconfirmed');
+  assert.equal(pinned.schema?.columns?.length, 2);
+  assert.ok(pinned.attribution !== undefined);
+});

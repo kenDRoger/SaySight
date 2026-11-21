@@ -18,6 +18,10 @@ export interface DatasetRelease {
   sourcePublishedAt?: string | null;
   sourceUpdatedAt?: string | null;
   freshnessStatus?: string;
+  licenceStatus?: string;
+  attribution?: string;
+  connectorId?: string | null;
+  schema?: unknown;
 }
 
 // MVP-A starts with a verified contract-shaped catalog record. The live BetterGov

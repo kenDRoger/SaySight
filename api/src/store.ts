@@ -142,7 +142,7 @@ export type NormalizedCoverage = { year: number; status: string; rows: number; a
 export async function getCatalogReleases(): Promise<DatasetRelease[] | undefined> {
   if (!pool) return undefined;
   // Private drafts are workflow state, not catalog entries.
-  const result = await pool.query(`SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, agency_id, region, last_checked_at, source_published_at, source_updated_at, freshness_status
+  const result = await pool.query(`SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, agency_id, region, last_checked_at, source_published_at, source_updated_at, freshness_status, attribution, licence_status, connector_id
      FROM dataset_releases
      WHERE COALESCE(metadata->>'visibility', '') <> 'private-draft'
      ORDER BY name`);
@@ -158,7 +158,13 @@ export async function getCatalogReleases(): Promise<DatasetRelease[] | undefined
     lastCheckedAt: (row.last_checked_at ?? row.metadata.lastCheckedAt)?.toISOString?.() ?? row.metadata.lastCheckedAt ?? verified?.lastCheckedAt ?? null,
     sourcePublishedAt: (row.source_published_at ?? row.metadata.sourcePublishedAt)?.toISOString?.() ?? row.metadata.sourcePublishedAt ?? verified?.sourcePublishedAt ?? null,
     sourceUpdatedAt: (row.source_updated_at ?? row.metadata.sourceUpdatedAt)?.toISOString?.() ?? row.metadata.sourceUpdatedAt ?? verified?.sourceUpdatedAt ?? null,
-    freshnessStatus: (row.freshness_status !== 'unknown' && row.freshness_status) || row.metadata.freshnessStatus || verified?.freshnessStatus || 'unknown' };
+    freshnessStatus: (row.freshness_status !== 'unknown' && row.freshness_status) || row.metadata.freshnessStatus || verified?.freshnessStatus || 'unknown',
+    // A reader must be able to see the licence state before using a dataset (S10a),
+    // and the UI needs the stored schema to offer join keys.
+    licenceStatus: row.licence_status ?? 'unconfirmed',
+    attribution: row.attribution || verified?.publisher || '',
+    connectorId: row.connector_id ?? null,
+    schema: row.metadata.schema ?? null };
   });
 }
 

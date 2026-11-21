@@ -54,6 +54,9 @@ const nextStatuses: Record<string, string[]> = {
 };
 
 const isReviewer = (role: string | undefined) => role === 'reviewer' || role === 'maintainer';
+// Test fixtures publish like any other release, so label them rather than letting a
+// visitor mistake synthetic data for a government source.
+const isTestFixture = (release: Dataset) => /fixture/i.test(release.name) || release.checksum === 'test-only-checksum';
 const failureMessage = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
 const failureStatus = (reason: unknown) => reason instanceof Error && 'status' in reason ? Number((reason as ApiFailure).status) : 0;
 
@@ -148,7 +151,13 @@ function App() {
   const agencyName = (id: string | null | undefined) => agencies.find((item) => item.id === id)?.name ?? id ?? 'Unlisted agency';
 
   useEffect(() => {
-    fetch(`${apiBase}/api/v1/datasets`).then((response) => response.json()).then((body) => { setReleases(body.datasets ?? []); setDataset(body.datasets[0]); }).catch(() => setError('The catalog is currently unavailable.'));
+    fetch(`${apiBase}/api/v1/datasets`).then((response) => response.json()).then((body) => {
+      const list = body.datasets ?? [];
+      setReleases(list);
+      // The catalog is alphabetical, which would put a test fixture first. Feature the
+      // verified release when it is present and keep the full list below it.
+      setDataset(list.find((item: Dataset) => item.publisher === 'BetterGovPH') ?? list[0]);
+    }).catch(() => setError('The catalog is currently unavailable.'));
   }, []);
 
   useEffect(() => {
@@ -382,7 +391,16 @@ function App() {
 
   return <main>
     <header>
-      <p className="eyebrow">Public data, checked together</p><h1>SaySight</h1><p className="lede">Explore public datasets and build findings with visible sources, calculations, and limitations.</p>
+      <h1>SaySight</h1><p className="lede">Turn public datasets into checkable findings: every result shows its source, calculation, validation, and limitations.</p>
+      <nav className="guide" aria-label="What you can do here">
+        <h2 className="guide-title">What you can do here</h2>
+        <ol>
+          <li><a href="#dataset-heading">Explore</a> a cataloged release and its field definitions.</li>
+          <li><a href="#analysis-heading">Run</a> one of five deterministic recipes and see the matching rows first.</li>
+          <li><a href="#join-heading">Compare</a> two releases with the curated join and its diagnostics.</li>
+        </ol>
+        <p className="muted">Browsing, filtering, and analysis are anonymous. Sign in to save findings, comment, review, or upload.</p>
+      </nav>
       <div className="session">
         {!sessionReady ? <p role="status">Checking account…</p> : user ? <>
           <p role="status">Signed in as <strong>{user.email}</strong> ({user.role}).</p>
@@ -400,6 +418,7 @@ function App() {
     <section aria-labelledby="dataset-heading">
       <Card className="card">
       <h2 id="dataset-heading">Dataset catalog</h2>
+      <p className="muted">One verified release is the working dataset. Other entries are published releases and test fixtures; each lists its agency, region, and freshness so you can judge it before using it.</p>
       {dataset ? <>
         <h3>{dataset.name}</h3>
         <p>Publisher: {dataset.publisher} · Terms: {dataset.reuseTerms}</p>
@@ -417,18 +436,21 @@ function App() {
           </table>
           </div>
         </details>
-        <h3>Releases and source freshness</h3>
-        {releases.length === 0 ? <p className="muted">No releases listed.</p> : <ul className="release-list">{releases.map((release) => <li key={release.id ?? release.releaseId}>
-          <strong>{release.name}</strong>
+        <details className="release-details">
+          <summary>Releases and source freshness ({releases.length})</summary>
+          {releases.length === 0 ? <p className="muted">No releases listed.</p> : <ul className="release-list">{releases.map((release) => <li key={release.id ?? release.releaseId}>
+          <strong>{release.name}</strong>{isTestFixture(release) && <span className="badge">Test data</span>}
           <p>Agency: {agencyName(release.agencyId)} · Region: {release.region || '—'} · Freshness: <strong>{release.freshnessStatus || 'unknown'}</strong></p>
           <p className="muted">Last checked: {release.lastCheckedAt ? new Date(release.lastCheckedAt).toLocaleDateString() : '—'}</p>
         </li>)}</ul>}
+        </details>
       </> : <p>Loading catalog…</p>}
       </Card>
     </section>
     <section aria-labelledby="analysis-heading">
       <Card className="card">
       <h2 id="analysis-heading">Run a reproducible analysis</h2>
+      <p className="muted">Pick a recipe and filters. The matching row count updates before you run, and every run executes twice so reproducibility is recorded, not assumed.</p>
       <form onSubmit={submit}>
         <div className="form-field"><Label htmlFor="recipe">Recipe</Label><select id="recipe" value={recipe} onChange={(event) => setRecipe(event.target.value)}><option value="summary">Summary</option><option value="compare">Compare</option><option value="rank">Rank</option><option value="distribution">Distribution</option><option value="change_over_time">Change over time</option></select></div>
         {recipe === 'compare' ? <><div className="form-field"><Label htmlFor="compare-year-a">First fiscal year</Label><select id="compare-year-a" value={compareYears[0]} onChange={(event) => setCompareYears([event.target.value, compareYears[1]])}>{(dataset?.coverage.fiscalYears ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select></div><div className="form-field"><Label htmlFor="compare-year-b">Second fiscal year</Label><select id="compare-year-b" value={compareYears[1]} onChange={(event) => setCompareYears([compareYears[0], event.target.value])}>{(dataset?.coverage.fiscalYears ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select></div></> : <div className="form-field"><Label htmlFor="fiscal-year">Fiscal year (optional)</Label><Input id="fiscal-year" inputMode="numeric" type="number" min="2000" max="2026" value={year} onChange={(event) => setYear(event.target.value)} placeholder="All years" /></div>}
@@ -443,7 +465,7 @@ function App() {
     <section aria-labelledby="join-heading">
       <Card className="card">
       <h2 id="join-heading">Curated join</h2>
-      <p>Joins the validated BetterGov GAA coverage release with a clearly labeled <strong>synthetic fixture</strong> on the explicit <code>fiscal_year</code> key. The fixture is test data, not a real government dataset, and no other dataset pair can be joined here.</p>
+      <p>Joins the validated BetterGov GAA coverage release with a clearly labeled <strong>synthetic fixture</strong> on the explicit <code>fiscal_year</code> key. The fixture is test data, not a real government dataset, and no other dataset pair can be joined here. Diagnostics show unmatched rows and duplicate keys instead of hiding them.</p>
       <Button type="button" variant="primary" size="md" onClick={runCuratedJoin} isLoading={joining} disabled={joining}>{joining ? 'Joining…' : 'Run curated join'}</Button>
       {joinedStatus && <p role="status" className="muted">{joinedStatus}</p>}
       {joinedError && <p role="alert" className="error">{joinedError}</p>}

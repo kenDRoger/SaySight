@@ -19,6 +19,14 @@ Compose builds and starts the React/Vite/Kapwa frontend, TypeScript API, Go work
 
 Local-only database and MinIO development credentials are configured in `docker-compose.yml`; do not use them outside local development. To stop services, use `docker compose down`. To also delete local database and storage volumes, use `docker compose down -v`.
 
+## First-run guidance
+
+The landing page opens with a three-step guide (explore → run → compare) and states
+that browsing and analysis are anonymous, so a new visitor knows what the MVP does
+before signing in. The verified BetterGov release is featured above the full
+release list, which stays collapsed behind a disclosure; test fixtures carry a
+`Test data` badge. No tour, modal, or new dependency is involved.
+
 ## Components
 
 - `frontend/` — React, TypeScript, Vite, and `@bettergov/kapwa`.

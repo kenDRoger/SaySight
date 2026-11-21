@@ -240,4 +240,4 @@ authorization rules apply as in the real flow — you still cannot review your o
 finding, and a high-impact finding still needs a second reviewer.
 
 This grants maintainer access to anyone who can reach the API. It is off by default and
-must never be deployed enabled; see `architecture.md` for the exact removal steps.
+must never be deployed enabled; see the Demo-only section in `architecture.md` for the exact removal steps.

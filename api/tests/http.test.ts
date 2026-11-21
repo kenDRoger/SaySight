@@ -342,6 +342,9 @@ test('the public finding page shows the claim escaped directly under the status 
   assert.equal(page.status, 200, html);
   assert.ok(html.includes(`</p><p><strong>Claim:</strong> &lt;b&gt;FY2024 appropriations match the published release for this scope&lt;/b&gt;</p>`));
   assert.ok(!html.includes('<b>FY2024 appropriations'));
+  assert.match(html, /<p>Download:/);
+  assert.ok(html.includes(`/api/v1/evidence/${evidenceId}/export.csv`));
+  assert.ok(html.includes(`/api/v1/evidence/${evidenceId}/export.json`));
 });
 
 // Review queue, decisions, and history.
@@ -886,4 +889,34 @@ test('an unknown relationship is refused', async (t) => {
   });
   assert.equal(response.status, 404);
   assert.deepEqual(await responseJson<unknown>(response), { error: 'relationship_not_found' });
+});
+
+// Downloadable evidence (gap 8).
+
+test('the CSV export downloads evidence metadata with escaped values', async (t) => {
+  if (!ready(t, true)) return;
+  const response = await api(`/api/v1/evidence/${evidenceId}/export.csv`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type') ?? '', /^text\/csv/);
+  assert.match(response.headers.get('content-disposition') ?? '', /^attachment; filename="evidence-.*\.csv"$/);
+  const evidence = await responseJson<{ releaseChecksum: string }>(await api(`/api/v1/evidence/${evidenceId}`));
+  const body = await responseText(response);
+  assert.ok(body.includes(`release_checksum,${evidence.releaseChecksum}`));
+  const quotedFilters = JSON.stringify({ year: 2024 }).replace(/"/g, '""');
+  assert.ok(body.includes(`filters,"${quotedFilters}"`), 'quoted filter value survives');
+  const missing = await api(`/api/v1/evidence/${randomUUID()}/export.csv`);
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await responseJson<unknown>(missing), { error: 'evidence_not_found' });
+});
+
+test('the JSON export downloads the same evidence and refuses unknown ids', async (t) => {
+  if (!ready(t, true)) return;
+  const response = await api(`/api/v1/evidence/${evidenceId}/export.json`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type') ?? '', /^application\/json/);
+  assert.match(response.headers.get('content-disposition') ?? '', /^attachment; filename="evidence-.*\.json"$/);
+  assert.equal((await responseJson<{ id: string }>(response)).id, evidenceId);
+  const missing = await api(`/api/v1/evidence/${randomUUID()}/export.json`);
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await responseJson<unknown>(missing), { error: 'evidence_not_found' });
 });

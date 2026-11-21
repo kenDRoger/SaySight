@@ -34,7 +34,8 @@ release list, which stays collapsed behind a disclosure; test fixtures carry a
 - `worker/` — Go checksum/import validation and deterministic recipe execution.
 - `migrations/` — ordered PostgreSQL schema migrations.
 - `scripts/` — migration tracking and local database setup; the public sample seed lives in `api/scripts/seed.mjs`.
-- `scripts/a11y/` — accessibility and mobile-overflow audit (axe-core via Playwright).
+- `scripts/a11y/` — accessibility and mobile-overflow audit (axe-core via Playwright) plus browser interaction checks.
+- `scripts/verify/` — the stage verification suites (MVP-B, MVP-C, MVP-D spec and adversarial) with one runner: `python3 scripts/verify/run.py`.
 
 ## Accounts and sign-in
 

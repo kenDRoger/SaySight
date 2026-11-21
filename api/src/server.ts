@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, getRun, insertInsight, insertRun, createSavedView, countReleaseRows, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, getReleaseRowSchema, getReleaseRows, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveReleaseRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { createComment, listPublicFindings, createFinding, getRun, insertInsight, insertRun, createSavedView, countReleaseRows, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, getReleaseRowSchema, getReleaseRows, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveReleaseRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
 import { inferReleaseSchema, licenceStatus, pinSummary, releaseKey } from './pin.js';
 import { executeJoin, joinedSchema, limitJoinedRows } from './joinRun.js';
 import { connectors, getConnector } from './connectors.js';
@@ -68,6 +68,8 @@ type WorkerAnalysisResponse = {
 // its portal, and 503 for unavailable dependencies.
 // The findings/:id/page route is HTML and returns 404 or 503 as plain text.
 const maxConcurrentUploads = 2;
+// A public list must stay one bounded response, so the cap is the contract.
+const publicFindingLimit = 100;
 
 function uploadBusy(response: ServerResponse) {
   response.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '1' });
@@ -1098,6 +1100,25 @@ const server = createServer((request, response) => {
         ? `<li><em>Comment removed by a moderator</em>${comment.removalReason ? ` — ${escapeHtml(comment.removalReason)}` : ''}</li>`
         : `<li>${escapeHtml(comment.body)} <small>(${escapeHtml(comment.createdAt)})</small></li>`).join('')}</ol>` : '<p>No comments yet.</p>'}</section></main></body></html>`);
     }).catch(() => { response.writeHead(503); response.end('Finding page unavailable'); });
+    return;
+  }
+
+  // Public, anonymous browse of every finding. The page route renders one finding;
+  // without this a reader can only reach findings they already have ids for.
+  const findingsListMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings(?:\?(.*))?$/) : undefined;
+  if (findingsListMatch) {
+    const params = new URLSearchParams(findingsListMatch[1] ?? '');
+    const status = params.get('status');
+    const limit = params.get('limit');
+    const offset = params.get('offset');
+    if (status !== null && !isStatus(status)) { json(response, 400, { error: 'invalid_filter', parameter: 'status' }); return; }
+    if (limit !== null && !/^\d+$/.test(limit)) { json(response, 400, { error: 'invalid_filter', parameter: 'limit' }); return; }
+    if (offset !== null && !/^\d+$/.test(offset)) { json(response, 400, { error: 'invalid_filter', parameter: 'offset' }); return; }
+    const requested = limit === null ? publicFindingLimit : Number(limit);
+    if (requested < 1 || requested > publicFindingLimit) { json(response, 400, { error: 'invalid_filter', parameter: 'limit' }); return; }
+    listPublicFindings({ statuses: status === null ? undefined : [status], limit: requested, offset: offset === null ? 0 : Number(offset) })
+      .then((findings) => json(response, 200, { findings }))
+      .catch(() => json(response, 503, { error: 'finding_store_unavailable' }));
     return;
   }
 

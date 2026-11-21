@@ -662,6 +662,29 @@ export async function listReviewQueue(statuses: string[]): Promise<Array<Finding
     createdAt: row.created_at.toISOString(), authorRole: row.author_role ?? null, authorEmail: row.author_email ?? null }));
 }
 
+export type PublicFinding = Finding & { recipe: string | null; datasetReleaseId: string | null };
+
+// Every finding is public by design, so this reads without an account. It joins the
+// run for its recipe because a claim alone does not tell a reader what was computed.
+export async function listPublicFindings(input: { statuses?: string[]; limit: number; offset: number }): Promise<PublicFinding[]> {
+  if (!pool) {
+    return [...findings.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(input.offset, input.offset + input.limit)
+      .map((finding) => ({ ...finding, recipe: null, datasetReleaseId: null }));
+  }
+  const result = await pool.query(
+    `SELECT f.id, f.analysis_run_id, f.status, f.impact, f.claim, f.submitted_by, f.created_at, a.recipe, a.dataset_release_id
+     FROM findings f LEFT JOIN analysis_runs a ON a.id = f.analysis_run_id
+     WHERE $1::text[] IS NULL OR f.status = ANY($1::text[])
+     ORDER BY f.created_at DESC, f.id DESC LIMIT $2 OFFSET $3`,
+    [input.statuses ?? null, input.limit, input.offset],
+  );
+  return result.rows.map((row) => ({ id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact,
+    claim: row.claim, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString(),
+    recipe: row.recipe ?? null, datasetReleaseId: row.dataset_release_id ?? null }));
+}
+
 export async function getEvidence(id: string): Promise<Evidence | undefined> {
   if (memory.has(id)) return memory.get(id);
   if (!pool) return undefined;

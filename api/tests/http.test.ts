@@ -1198,3 +1198,33 @@ test('the catalog exposes licence state and stored schema for pinned releases', 
   assert.equal(pinned.schema?.columns?.length, 2);
   assert.ok(pinned.attribution !== undefined);
 });
+
+test('anyone can list public findings newest first, filtered by status', async (t) => {
+  if (!ready(t, true)) return;
+  const submitter = await signIn('public-list-submitter');
+  const older = await submitFinding(submitter.cookie);
+  const reviewerAccount = await reviewer();
+  await moveTo(older.id, reviewerAccount.cookie, 'Rejected');
+  const newer = await submitFinding(submitter.cookie);
+
+  const listed = await responseJson<{ findings: Array<{ id: string; status: string; claim?: string; recipe?: string; createdAt: string }> }>(await api('/api/v1/findings'));
+  const ids = listed.findings.map((finding) => finding.id);
+  assert.ok(ids.includes(older.id) && ids.includes(newer.id), 'both findings must be publicly listed');
+  const dates = listed.findings.map((finding) => Date.parse(finding.createdAt));
+  assert.deepEqual(dates, [...dates].sort((a, b) => b - a), 'findings must be ordered newest first');
+  const decided = listed.findings.find((finding) => finding.id === older.id);
+  assert.equal(decided?.status, 'Rejected');
+  assert.equal(decided?.recipe, 'summary');
+  assert.equal(decided?.claim, findingClaim);
+
+  const filtered = await responseJson<{ findings: Array<{ status: string }> }>(await api('/api/v1/findings?status=Rejected'));
+  assert.ok(filtered.findings.length >= 1);
+  assert.ok(filtered.findings.every((finding) => finding.status === 'Rejected'));
+
+  assert.equal((await api('/api/v1/findings?status=Not%20a%20status')).status, 400);
+  assert.equal((await api('/api/v1/findings?limit=lots')).status, 400);
+  const capped = await api('/api/v1/findings?limit=1000');
+  assert.equal(capped.status, 400);
+  const bounded = await responseJson<{ findings: unknown[] }>(await api('/api/v1/findings?limit=1'));
+  assert.equal(bounded.findings.length, 1);
+});

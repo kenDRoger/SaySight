@@ -481,7 +481,7 @@ const server = createServer((request, response) => {
         if (message === 'comment_already_removed') { json(response, 409, { error: 'comment_already_removed' }); return; }
         json(response, 503, { error: 'comments_unavailable' });
       }
-    });
+    }).catch(() => json(response, 503, { error: 'comments_unavailable' }));
     return;
   }
 
@@ -669,6 +669,10 @@ const server = createServer((request, response) => {
 
       let rows: Array<Record<string, unknown>>;
       let columns: RecipeColumn[];
+      // concept.md: join keys, cardinality, matched and unmatched rows are visible. The
+      // run carries the plan it used, not only its output.
+      let joinPlan: { leftKey: string; rightKey: string; leftReleaseId: string; rightReleaseId: string;
+        rightUniqueKeys?: string[]; aggregation?: unknown; diagnostics: unknown } | undefined;
       if (rowsByRelease.length === 2) {
         if (typeof payload.left_key !== 'string' || typeof payload.right_key !== 'string') {
           json(response, 400, { error: 'join_keys_required', message: 'a two-release run needs left_key and right_key' });
@@ -689,6 +693,8 @@ const server = createServer((request, response) => {
         if (limited.rows.length !== joined.rows.length) { json(response, 413, { error: 'join_too_large', rows: joined.rows.length, limit: 50_000 }); return; }
         rows = limited.rows;
         columns = joinedSchema(leftColumns, rightColumns, payload.left_key) as RecipeColumn[];
+        joinPlan = { leftKey: payload.left_key, rightKey: payload.right_key, leftReleaseId: left.id, rightReleaseId: right.id,
+          diagnostics: joined.diagnostics, rightUniqueKeys: plan.plan.rightUniqueKeys, aggregation: plan.plan.aggregation };
       } else {
         rows = rowsByRelease[0].rows;
         columns = schemaColumns(await getReleaseRowSchema(rowsByRelease[0].id));
@@ -707,7 +713,7 @@ const server = createServer((request, response) => {
         const id = await insertInsight({ runId, recipe: skip.recipe, releaseId: releaseIds[0]!, recipeVersion: 'generic-v1', status: 'skipped', reason: skip.reason });
         insights.push({ id, recipe: skip.recipe, status: 'skipped', reason: skip.reason });
       }
-      json(response, 201, { run_id: runId, selection, insights,
+      json(response, 201, { run_id: runId, selection, insights, ...(joinPlan ? { join: joinPlan } : {}),
         summary: `${insights.filter((insight) => insight.status === 'ok').length} insights produced, ${executed.skipped.length} skipped` });
     }).catch(() => json(response, 503, { error: 'run_unavailable' }));
     return;
@@ -790,7 +796,17 @@ const server = createServer((request, response) => {
     return;
   }
 
-  if (request.method === 'GET' && request.url === '/api/v1/imports/drafts') { json(response, 200, { releases: listDraftReleases() }); return; }
+  if (request.method === 'GET' && request.url === '/api/v1/imports/drafts') {
+    // Every draft is created as a private draft, so listing them is not a public read.
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    const drafts = listDraftReleases();
+    auth.session(requestSessionToken(request)).then((user) => {
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'reviewer' && user.role !== 'maintainer') { json(response, 403, { error: 'reviewer_required' }); return; }
+      json(response, 200, { releases: drafts.slice(0, 100) });
+    }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
+    return;
+  }
 
   const publishMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/imports\/([^/]+)\/publish$/) : undefined;
   if (publishMatch) {
@@ -869,11 +885,12 @@ const server = createServer((request, response) => {
     readBoundedBody(request, maxUploadBytes).finally(release).then(async (incoming) => {
       if ('denied' in incoming) { json(response, 413, { error: 'dataset_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      let filename: string;
+      try { filename = decodeURIComponent(importMatch[1]); } catch { json(response, 400, { error: 'invalid_filename' }); return; }
       try {
-        const filename = decodeURIComponent(importMatch[1]);
-      const upload = checkUpload({ filename, bytes: incoming.data.length });
-      if (!upload.ok) { json(response, 400, { error: upload.error }); return; }
-      const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${encodeURIComponent(filename)}`, { method: 'POST', body: incoming.data as unknown as BodyInit });
+        const upload = checkUpload({ filename, bytes: incoming.data.length });
+        if (!upload.ok) { json(response, 400, { error: upload.error }); return; }
+        const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${encodeURIComponent(filename)}`, { method: 'POST', body: incoming.data as unknown as BodyInit });
         response.writeHead(workerResponse.status, { 'content-type': 'application/json; charset=utf-8' }); response.end(await workerResponse.text());
       } catch { json(response, 503, { error: 'import_worker_unavailable' }); }
     });
@@ -914,11 +931,17 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === 'POST' && request.url === '/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/import') {
-    workerFetch(`${workerUrl}/records`).then(async (workerResponse) => {
+    // A write to the catalog: it must belong to a maintainer, like every other one.
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    auth.session(requestSessionToken(request)).then((user) => {
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
+      return workerFetch(`${workerUrl}/records`).then(async (workerResponse) => {
       if (!workerResponse.ok) { json(response, 503, { error: 'coverage_release_unavailable' }); return; }
       const rows = await workerResponse.json() as Array<{ DatasetReleaseID: string; FiscalYear: number; CoverageStatus: string; SourceRowCount: number; AmountPesos?: number; Scopes?: Record<string, unknown>; Notes: string[] }>;
       const imported = await saveNormalizedCoverage(rows, catalog[0]);
-      json(response, 200, { dataset_release_id: 'bettergov-gaa-coverage-2026-11-07', imported_rows: imported, status: 'validated' });
+        json(response, 200, { dataset_release_id: 'bettergov-gaa-coverage-2026-11-07', imported_rows: imported, status: 'validated' });
+      });
     }).catch((error) => { console.error(error); json(response, 503, { error: 'normalized_import_unavailable' }); });
     return;
   }
@@ -1102,21 +1125,23 @@ const server = createServer((request, response) => {
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
       // Submission is an authenticated act: the author is recorded and the
       // finding starts Unverified, exactly like every other source.
-      const user = await auth.session(requestSessionToken(request));
+      const user = await auth.session(requestSessionToken(request)).catch(() => undefined);
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      // Only the parse is a client error; everything after it can fail on the store.
+      let payload: { evidence_id?: unknown; claim?: unknown };
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      if (typeof payload.evidence_id !== 'string') { json(response, 400, { error: 'evidence_id_required' }); return; }
+      const claim = validateClaim(payload.claim);
+      if ('error' in claim) { json(response, 400, { error: claim.error }); return; }
       try {
-        const payload = JSON.parse(incoming.data.toString('utf8')) as { evidence_id?: unknown; claim?: unknown };
-        if (typeof payload.evidence_id !== 'string') { json(response, 400, { error: 'evidence_id_required' }); return; }
-        const claim = validateClaim(payload.claim);
-        if ('error' in claim) { json(response, 400, { error: claim.error }); return; }
         const evidence = await getEvidence(payload.evidence_id);
         if (!evidence) { json(response, 404, { error: 'evidence_not_found' }); return; }
         // Impact is derived from the evidence, never chosen by the submitter.
         const release = catalog.find((item) => item.id === evidence.datasetReleaseId);
         const impact = deriveImpact({ filters: evidence.filters, totalYears: release?.coverage.fiscalYears.length ?? 0 });
         json(response, 201, await createFinding(evidence.id, user.id, impact, claim.claim));
-      } catch { json(response, 400, { error: 'invalid_json' }); }
-    });
+      } catch { json(response, 503, { error: 'finding_store_unavailable' }); }
+    }).catch(() => json(response, 503, { error: 'finding_store_unavailable' }));
     return;
   }
 

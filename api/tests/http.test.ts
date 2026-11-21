@@ -1339,3 +1339,45 @@ test('a newly submitted finding reaches a reviewer without any other step', asyn
   const moved = await moveTo(finding.id, reviewerAccount.cookie, 'Pending verification');
   assert.equal(moved.status, 'Pending verification');
 });
+
+test('a two-release run returns the join plan it used', async (t) => {
+  if (!ready(t)) return;
+  const account = await maintainer();
+  const left = `release-join-left-${randomUUID()}`;
+  const right = `release-join-right-${randomUUID()}`;
+  await insertPinnedReleaseForTest(left, [{ year: 2024, amount: 10 }, { year: 2025, amount: 20 }], [{ name: 'year', type: 'integer' }, { name: 'amount', type: 'number' }]);
+  await insertPinnedReleaseForTest(right, [{ year: 2024, population: 100 }, { year: 2025, population: 200 }], [{ name: 'year', type: 'integer' }, { name: 'population', type: 'number' }]);
+  const response = await api('/api/v1/runs', {
+    method: 'POST', cookie: account.cookie,
+    body: { release_ids: [left, right], left_key: 'year', right_key: 'year' },
+  });
+  const text = await responseText(response);
+  assert.equal(response.status, 201, text);
+  const body = JSON.parse(text) as { join?: { leftKey: string; rightKey: string; diagnostics: { matchedRows?: number; unmatchedLeft?: number; unmatchedRight?: number } } };
+  assert.ok(body.join, 'a two-release run must report the plan it used');
+  assert.equal(body.join.leftKey, 'year');
+  assert.equal(body.join.rightKey, 'year');
+  assert.ok(body.join.diagnostics, 'the plan must carry its diagnostics');
+});
+
+test('drafts are private state, and a malformed filename is a client error', async (t) => {
+  if (!ready(t)) return;
+  // Listing drafts must not be an anonymous read: every draft is created private.
+  assert.equal((await api('/api/v1/imports/drafts')).status, 401);
+  const reviewerAccount = await reviewer();
+  assert.equal((await api('/api/v1/imports/drafts', { cookie: reviewerAccount.cookie })).status, 200);
+  // A filename that cannot be decoded is bad input, not a worker outage.
+  const malformed = await api('/api/v1/imports/validate?filename=%zz', { method: 'POST', body: 'a,b\n1,2\n' });
+  assert.equal(malformed.status, 400);
+  assert.equal((await responseJson<{ error: string }>(malformed)).error, 'invalid_filename');
+});
+
+test('importing the coverage release is a maintainer write, not an anonymous one', async (t) => {
+  if (!ready(t)) return;
+  const anonymous = await api('/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/import', { method: 'POST' });
+  assert.equal(anonymous.status, 401);
+  const submitter = await signIn('import-submitter');
+  assert.equal((await api('/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/import', { method: 'POST', cookie: submitter.cookie })).status, 403);
+  const maintainerAccount = await maintainer();
+  assert.equal((await api('/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/import', { method: 'POST', cookie: maintainerAccount.cookie })).status, 200);
+});

@@ -25,6 +25,8 @@ type Dataset = {
   licenceStatus?: string;
   attribution?: string;
   metadata?: { schema?: { columns?: SchemaColumn[] } };
+  // The catalog route exposes the stored schema at the top level.
+  schema?: { columns?: SchemaColumn[] } | null;
   rowCount?: number;
 };
 
@@ -33,7 +35,9 @@ type ConnectorCheck = { status?: string; httpStatus?: number | null; datasetCoun
 type Connector = { id: string; name: string; protocol: string; kind: 'api' | 'scraped'; baseUrl?: string; externalBenchmark: boolean; last_check?: ConnectorCheck | null; lastCheck?: ConnectorCheck | null };
 type RunInsight = { id: string; recipe: string; status: 'ok' | 'skipped'; result?: unknown; calculation?: string; warnings?: string[]; reason?: string; evidence_id?: string | null };
 type RunSelection = { applicable: string[]; skipped: Array<{ recipe: string; reason: string }> };
-type RunResponse = { run_id: string; selection: RunSelection; insights: RunInsight[]; summary: string };
+type JoinDiagnostics = { leftRows?: number; rightRows?: number; matchedRows?: number; unmatchedLeft?: number; unmatchedRight?: number; duplicateLeftKeys?: number; duplicateRightKeys?: number; cardinality?: string };
+type RunResponse = { run_id: string; selection: RunSelection; insights: RunInsight[]; summary: string;
+  join?: { leftKey: string; rightKey: string; leftReleaseId: string; rightReleaseId: string; rightUniqueKeys?: string[]; aggregation?: unknown; diagnostics: JoinDiagnostics } };
 
 type Agency = { id: string; name: string; website: string };
 type SavedView = { id: string; name: string; datasetReleaseId: string; filters: Record<string, unknown>; createdAt: string };
@@ -74,7 +78,7 @@ const nextStatuses: Record<string, string[]> = {
 const isReviewer = (role: string | undefined) => role === 'reviewer' || role === 'maintainer';
 // Test fixtures publish like any other release, so label them rather than letting a
 // visitor mistake synthetic data for a government source.
-const isTestFixture = (release: Dataset) => /fixture/i.test(release.name) || release.checksum === 'test-only-checksum';
+const isTestFixture = (release: Pick<Dataset, 'name'> & { checksum?: string }) => /fixture/i.test(release.name) || release.checksum === 'test-only-checksum';
 const failureMessage = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
 const failureStatus = (reason: unknown) => reason instanceof Error && 'status' in reason ? Number((reason as ApiFailure).status) : 0;
 
@@ -90,7 +94,7 @@ const licenceLabel = (release: Dataset): string => {
 // Join keys come from the stored schema; a release without one falls back to the
 // catalog's field definitions so a key can still be chosen.
 const releaseColumns = (release: Dataset): SchemaColumn[] => {
-  const schema = release.metadata?.schema?.columns;
+  const schema = release.schema?.columns ?? release.metadata?.schema?.columns;
   if (schema && schema.length > 0) return schema;
   return (release.fields ?? []).map((field) => ({ name: field.name, type: field.type }));
 };
@@ -783,7 +787,7 @@ function App() {
           {publicFindings.map((item) => <li key={item.id} className="finding-card">
             <div className="finding-top">
               <span className={`pill pill-${statusSlug(item.status)}`}>{item.status}</span>
-              {isTestFixture(datasets.find((release) => pickId(release) === item.datasetReleaseId) ?? ({ name: item.datasetReleaseId ?? '' } as Dataset)) && <span className="badge">Test data</span>}
+              {isTestFixture(datasets.find((release) => pickId(release) === item.datasetReleaseId) ?? { name: item.datasetReleaseId ?? '' }) && <span className="badge">Test data</span>}
               <span className="finding-meta">{describeFindingFacts(item)}</span>
             </div>
             <p className="claim">{item.claim || 'No claim was recorded for this finding.'}</p>
@@ -895,7 +899,7 @@ function App() {
       {showAllDatasets && visibleDatasets.length > 15 && <div className="more"><Button type="button" variant="outline" size="md" onClick={() => setShowAllDatasets(false)}>Show the first 15 again</Button></div>}
       {selectedReleases.length > 0 && <h3>Columns of the selected releases</h3>}
       {selectedReleases.map((release) => {
-        const columns = release.metadata?.schema?.columns ?? [];
+        const columns = releaseColumns(release);
         return <div className="selected-columns" key={pickId(release)}>
           <h4>{release.name}</h4>
           {columns.length > 0
@@ -958,6 +962,20 @@ function App() {
         : 'Choose a join key from each side to enable the run.'}</p>}
       {runError && <p role="alert" className="error">{runError}</p>}
       {runResult && <p role="status" className="run-summary">{runResult.summary}</p>}
+      {runResult?.join && <div className="join-plan">
+        <h3>Join plan</h3>
+        <dl className="diagnostics">
+          <div><dt>Left key</dt><dd><code>{runResult.join.leftKey}</code></dd></div>
+          <div><dt>Right key</dt><dd><code>{runResult.join.rightKey}</code></dd></div>
+          <div><dt>Cardinality</dt><dd>{runResult.join.diagnostics.cardinality ?? 'not reported'}</dd></div>
+          <div><dt>Matched rows</dt><dd>{resultText(runResult.join.diagnostics.matchedRows)}</dd></div>
+          <div><dt>Unmatched left</dt><dd>{resultText(runResult.join.diagnostics.unmatchedLeft)}</dd></div>
+          <div><dt>Unmatched right</dt><dd>{resultText(runResult.join.diagnostics.unmatchedRight)}</dd></div>
+          <div><dt>Duplicate left keys</dt><dd>{resultText(runResult.join.diagnostics.duplicateLeftKeys)}</dd></div>
+          <div><dt>Duplicate right keys</dt><dd>{resultText(runResult.join.diagnostics.duplicateRightKeys)}</dd></div>
+        </dl>
+        <p className="muted">Both releases are read as stored. A right side whose key repeats is refused rather than multiplied.</p>
+      </div>}
       {runResult && <>
         <h3>Insights</h3>
         <div className="insight-list">

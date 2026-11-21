@@ -1215,6 +1215,8 @@ test('anyone can list public findings newest first, filtered by status', async (
   const decided = listed.findings.find((finding) => finding.id === older.id);
   assert.equal(decided?.status, 'Rejected');
   assert.equal(decided?.recipe, 'summary');
+  assert.ok(decided?.datasetName, 'the list must name the dataset a finding came from');
+  assert.equal(typeof decided?.validationStatus, 'string');
   assert.equal(decided?.claim, findingClaim);
 
   const filtered = await responseJson<{ findings: Array<{ status: string }> }>(await api('/api/v1/findings?status=Rejected'));

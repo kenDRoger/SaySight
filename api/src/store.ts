@@ -662,7 +662,7 @@ export async function listReviewQueue(statuses: string[]): Promise<Array<Finding
     createdAt: row.created_at.toISOString(), authorRole: row.author_role ?? null, authorEmail: row.author_email ?? null }));
 }
 
-export type PublicFinding = Finding & { recipe: string | null; datasetReleaseId: string | null };
+export type PublicFinding = Finding & { recipe: string | null; datasetReleaseId: string | null; datasetName: string | null; filters: Record<string, unknown>; validationStatus: string | null };
 
 // Every finding is public by design, so this reads without an account. It joins the
 // run for its recipe because a claim alone does not tell a reader what was computed.
@@ -671,18 +671,23 @@ export async function listPublicFindings(input: { statuses?: string[]; limit: nu
     return [...findings.values()]
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(input.offset, input.offset + input.limit)
-      .map((finding) => ({ ...finding, recipe: null, datasetReleaseId: null }));
+      .map((finding) => ({ ...finding, recipe: null, datasetReleaseId: null, datasetName: null, filters: {}, validationStatus: null }));
   }
   const result = await pool.query(
-    `SELECT f.id, f.analysis_run_id, f.status, f.impact, f.claim, f.submitted_by, f.created_at, a.recipe, a.dataset_release_id
+    `SELECT f.id, f.analysis_run_id, f.status, f.impact, f.claim, f.submitted_by, f.created_at, a.recipe, a.dataset_release_id,
+            a.filters, a.validation, d.name AS dataset_name
      FROM findings f LEFT JOIN analysis_runs a ON a.id = f.analysis_run_id
+     LEFT JOIN dataset_releases d ON d.id = a.dataset_release_id
      WHERE $1::text[] IS NULL OR f.status = ANY($1::text[])
      ORDER BY f.created_at DESC, f.id DESC LIMIT $2 OFFSET $3`,
     [input.statuses ?? null, input.limit, input.offset],
   );
   return result.rows.map((row) => ({ id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact,
     claim: row.claim, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString(),
-    recipe: row.recipe ?? null, datasetReleaseId: row.dataset_release_id ?? null }));
+    recipe: row.recipe ?? null, datasetReleaseId: row.dataset_release_id ?? null, datasetName: row.dataset_name ?? null,
+    // The evidence payload nests its own validation report, so read through it once.
+    filters: (row.filters ?? {}) as Record<string, unknown>,
+    validationStatus: row.validation?.validation?.status ?? row.validation?.status ?? null }));
 }
 
 export async function getEvidence(id: string): Promise<Evidence | undefined> {

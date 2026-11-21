@@ -985,28 +985,26 @@ test('the connector catalog is public and lists every source', async (t) => {
   assert.equal(connectors.length, 8);
   assert.ok(connectors.every((connector) => connector.name && connector.protocol && connector.kind));
   for (const id of ['data-gov-ph', 'psada', 'opendata-org-ph', 'cids']) {
-    assert.equal(connectors.find((connector) => connector.id === id)?.kind, 'link-out', `${id} is a listed link-out`);
+    assert.equal(connectors.find((connector) => connector.id === id)?.kind, 'scraped', `${id} is a listed scraped source`);
   }
   assert.equal(connectors.find((connector) => connector.id === 'worldbank')?.externalBenchmark, true);
   assert.equal(connectors.find((connector) => connector.id === 'bettergov')?.externalBenchmark, false);
 });
 
-test('a maintainer check of a link-out connector is recorded without fetching anything', async (t) => {
+test('a maintainer check of a scraped source records the real outcome', async (t) => {
   if (!ready(t)) return;
-  const response = await connectorCheck('cids', (await maintainer()).cookie);
+  const response = await connectorCheck('psada', (await maintainer()).cookie);
   const text = await responseText(response);
-  assert.equal(response.status, 200, text);
-  const body = JSON.parse(text) as { connector: string; status: string; dataset_count: number; http_status: number | null; message: string };
-  assert.deepEqual(
-    { connector: body.connector, status: body.status, dataset_count: body.dataset_count, http_status: body.http_status },
-    { connector: 'cids', status: 'ok', dataset_count: 0, http_status: null },
-  );
-  assert.match(body.message, /not fetched/);
+  const body = JSON.parse(text) as { connector: string; status: string; dataset_count?: number; http_status?: number | null; message: string };
+  // PSA's archive answers 403 (measured), so the check must fail loudly and be logged,
+  // never reported as an empty success.
+  assert.equal(response.status, 502, text);
+  assert.equal(body.connector, 'psada');
+  assert.match(body.message, /403|refused|could not be reached/i);
   const listed = await responseJson<{ connectors: ConnectorEntry[] }>(await api('/api/v1/connectors'));
-  const cids = listed.connectors.find((connector) => connector.id === 'cids');
-  assert.equal(cids?.last_check?.status, 'ok');
-  assert.equal(cids?.last_check?.datasetCount, 0);
-  assert.ok(cids?.last_check?.createdAt);
+  const psada = listed.connectors.find((connector) => connector.id === 'psada');
+  assert.equal(psada?.last_check?.status, 'failed');
+  assert.ok(psada?.last_check?.createdAt);
 });
 
 test('an unknown connector check returns 404 for a maintainer', async (t) => {
@@ -1056,12 +1054,12 @@ test('pin route checks authentication before the connector', async (t) => {
   assert.deepEqual(await responseJson<unknown>(unknown), { error: 'connector_not_found' });
 });
 
-test('pinning a link-out is refused with the connector message', async (t) => {
+test('pinning a scraped source is refused with the connector message', async (t) => {
   if (!ready(t)) return;
   const response = await pinDataset('cids', { dataset_id: 'anything' }, (await maintainer()).cookie);
   assert.equal(response.status, 400);
   assert.deepEqual(await responseJson<unknown>(response),
-    { error: 'link_out', message: 'cids is a link-out and has no data to pin' });
+    { error: 'scraped_source', message: 'cids is scraped: choose one of its listed datasets and upload the file, or pin a portal with an API' });
 });
 
 test('a failed pin writes one failed connector check and no release', async (t) => {

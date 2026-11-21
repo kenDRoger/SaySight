@@ -27,6 +27,8 @@ export type PinnedDataset = {
 };
 
 // Every connector takes its HTTP reader as an argument so tests never hit a portal.
+import { probeScraped } from './connectors/scrape.js';
+
 export type FetchImpl = typeof fetch;
 
 // 'link-out' is added to the API protocols because a link-out entry has no
@@ -44,12 +46,19 @@ export type Connector = {
   fetchDataset(datasetId: string, fetchImpl: FetchImpl): Promise<PinnedDataset>;
 };
 
-// A link-out is never fetched: SaySight points the reader at the portal instead of
-// faking a dataset list it cannot read (S8, S8a).
-const linkOut = (id: string, name: string, baseUrl: string): Connector => ({
-  id, name, protocol: 'link-out', kind: 'link-out', baseUrl,
-  async listDatasets() { return { datasets: [], httpStatus: 200 }; },
-  async fetchDataset() { throw new Error(`${id} is a link-out and has no data to pin`); },
+// A scraped source is probed, not mirrored: it reports the links it actually
+// exposes, or the reason it exposes none, and it can never be pinned as a whole
+// because a page is not a dataset (S8).
+const scraped = (id: string, name: string, baseUrl: string): Connector => ({
+  id, name, protocol: 'link-out', kind: 'scraped', baseUrl,
+  async listDatasets(fetchImpl: FetchImpl) {
+    const probe = await probeScraped(baseUrl, fetchImpl);
+    if (probe.status !== 'ok') throw new Error(`${id}: ${probe.message}`);
+    return { datasets: probe.datasets, httpStatus: probe.httpStatus ?? 200 };
+  },
+  async fetchDataset(_datasetId: string) {
+    throw new Error(`${id} is scraped: choose one of its listed datasets and upload the file, or pin a portal with an API`);
+  },
 });
 
 
@@ -73,10 +82,10 @@ export const connectors: Connector[] = [
   hdx,
   worldBank,
   openStat,
-  linkOut('data-gov-ph', 'data.gov.ph', 'https://data.gov.ph'),
-  linkOut('psada', 'PSADA (PSA data archive)', 'https://psada.psa.gov.ph'),
-  linkOut('opendata-org-ph', 'Open Data Philippines', 'https://opendata.org.ph'),
-  linkOut('cids', 'UP CIDS', 'https://cids.up.edu.ph'),
+  scraped('data-gov-ph', 'data.gov.ph', 'https://data.gov.ph'),
+  scraped('psada', 'PSADA (PSA data archive)', 'https://psada.psa.gov.ph'),
+  scraped('opendata-org-ph', 'Open Data Philippines', 'https://opendata.org.ph'),
+  scraped('cids', 'UP CIDS', 'https://cids.up.edu.ph'),
 ];
 
 export function getConnector(id: string): Connector | undefined {

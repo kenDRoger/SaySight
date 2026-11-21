@@ -515,11 +515,11 @@ const server = createServer((request, response) => {
       let message = '';
       try {
         const listing = await connector.listDatasets(fetch);
-        const linkOut = connector.kind === 'link-out';
-        // A link-out is never fetched, so it reports no HTTP status rather than a fake one.
-        httpStatus = linkOut ? null : listing.httpStatus;
+        // A scraped source is probed, so its real HTTP status is recorded; a status of
+        // 200 with no datasets is reported as such rather than as success with data.
+        httpStatus = listing.httpStatus;
         datasetCount = listing.datasets.length;
-        message = linkOut ? 'link-out source; not fetched' : '';
+        message = connector.kind === 'scraped' ? `scraped source; ${datasetCount} dataset link${datasetCount === 1 ? '' : 's'} found` : '';
       } catch (error) {
         status = 'failed';
         message = error instanceof Error ? error.message : String(error);
@@ -555,7 +555,7 @@ const server = createServer((request, response) => {
       try { pinned = await connector.fetchDataset(datasetId, fetch); }
       catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (connector.kind === 'link-out') { json(response, 400, { error: 'link_out', message }); return; }
+        if (connector.kind === 'scraped') { json(response, 400, { error: 'scraped_source', message }); return; }
         const named = /HTTP (\d{3})/.exec(message);
         await insertConnectorCheck({ connector: connector.id, status: 'failed',
           httpStatus: named ? Number(named[1]) : null, datasetCount: null, message }).catch(() => undefined);

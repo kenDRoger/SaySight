@@ -103,10 +103,14 @@ test('World Bank is marked as an external benchmark', () => {
   for (const id of ['bettergov', 'hdx', 'openstat']) assert.equal(getConnector(id)?.externalBenchmark, undefined);
 });
 
-test('the link-out sources return an empty list and are never fetched', async () => {
-  const linkOuts = connectors.filter((connector) => connector.kind === 'link-out');
-  assert.deepEqual(linkOuts.map((connector) => connector.id), ['data-gov-ph', 'psada', 'opendata-org-ph', 'cids']);
-  for (const connector of linkOuts) assert.deepEqual((await connector.listDatasets(networkForbidden)).datasets, []);
+test('the scraped sources are probed, and none of them can be pinned as a whole', async () => {
+  const scrapedSources = connectors.filter((connector) => connector.kind === 'scraped');
+  assert.deepEqual(scrapedSources.map((connector) => connector.id), ['data-gov-ph', 'psada', 'opendata-org-ph', 'cids']);
+  // A portal that cannot be read reports the failure instead of an empty success.
+  for (const connector of scrapedSources) {
+    await assert.rejects(() => connector.listDatasets(networkForbidden), /unreachable|could not be reached/);
+    await assert.rejects(() => connector.fetchDataset('anything', networkForbidden), /scraped/);
+  }
 });
 
 test('the registry holds the four API connectors plus the link-out entries', () => {

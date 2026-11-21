@@ -1228,3 +1228,19 @@ test('anyone can list public findings newest first, filtered by status', async (
   const bounded = await responseJson<{ findings: unknown[] }>(await api('/api/v1/findings?limit=1'));
   assert.equal(bounded.findings.length, 1);
 });
+
+test('the public finding page states the real status, not a fixed Unverified', async (t) => {
+  if (!ready(t, true)) return;
+  const submitter = await signIn('page-status-submitter');
+  const finding = await submitFinding(submitter.cookie);
+  const before = await (await api(`/api/v1/findings/${finding.id}/page`)).text();
+  assert.match(before, /<h1>Unverified finding<\/h1>/);
+  assert.match(before, /has not been human-reviewed/);
+
+  const reviewerAccount = await reviewer();
+  await moveTo(finding.id, reviewerAccount.cookie, 'Rejected');
+  const after = await (await api(`/api/v1/findings/${finding.id}/page`)).text();
+  assert.match(after, /<h1>Rejected finding<\/h1>/);
+  assert.doesNotMatch(after, /has not been human-reviewed/);
+  assert.match(after, /A reviewer recorded <strong>Rejected<\/strong>/);
+});

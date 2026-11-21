@@ -1326,3 +1326,16 @@ test('a published upload can be analysed, not just listed', async (t) => {
   const insights = (JSON.parse(runText) as { insights: Array<{ status: string }> }).insights;
   assert.ok(insights.some((insight) => insight.status === 'ok'), 'a published upload with typed columns must produce at least one insight');
 });
+
+test('a newly submitted finding reaches a reviewer without any other step', async (t) => {
+  if (!ready(t, true)) return;
+  const submitterAccount = await signIn('triage-author');
+  const finding = await submitFinding(submitterAccount.cookie);
+  assert.equal(finding.status, 'Unverified');
+  const reviewerAccount = await reviewer();
+  const { findings } = await responseJson<{ findings: Finding[] }>(await api('/api/v1/review/queue', { cookie: reviewerAccount.cookie }));
+  assert.ok(findings.some((candidate) => candidate.id === finding.id), 'a submitted finding must be visible to a reviewer');
+  // And the reviewer can move it on from there.
+  const moved = await moveTo(finding.id, reviewerAccount.cookie, 'Pending verification');
+  assert.equal(moved.status, 'Pending verification');
+});

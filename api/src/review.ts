@@ -18,7 +18,9 @@ const transitions: Record<Status, Status[]> = {
 };
 
 export const decisionStatuses: Status[] = ['Verified', 'Needs correction', 'Rejected', 'Insufficient evidence'];
-export const reviewQueueStatuses: Status[] = ['Pending verification', 'In review'];
+// A submitted finding is Unverified, and triage is a reviewer job: without it here a new
+// finding is invisible to every reviewer and the documented flow stops at step one.
+export const reviewQueueStatuses: Status[] = ['Unverified', 'Pending verification', 'In review'];
 
 export const isStatus = (value: unknown): value is Status => typeof value === 'string' && (statuses as readonly string[]).includes(value);
 

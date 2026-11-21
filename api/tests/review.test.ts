@@ -7,7 +7,9 @@ const reviewer = { role: 'reviewer' as const, actorId: 'reviewer-1', submittedBy
 test('the documented status set is exactly the one mvp.md names', () => {
   assert.deepEqual([...statuses], ['Unverified', 'Pending verification', 'In review', 'Verified', 'Needs correction', 'Rejected', 'Insufficient evidence']);
   assert.deepEqual([...decisionStatuses], ['Verified', 'Needs correction', 'Rejected', 'Insufficient evidence']);
-  assert.deepEqual([...reviewQueueStatuses], ['Pending verification', 'In review']);
+  // Unverified belongs to the queue: triage is a reviewer's job, and without it a new
+  // finding is invisible to every reviewer.
+  assert.deepEqual([...reviewQueueStatuses], ['Unverified', 'Pending verification', 'In review']);
 });
 
 test('a decision status cannot be reached in one step from Unverified', () => {

@@ -1284,3 +1284,45 @@ test('pagination windows rows without changing the default response', async (t) 
   assert.deepEqual(firstTwo.datasets.map((row) => row.id), all.datasets.slice(0, 2).map((row) => row.id));
   assert.deepEqual(offsetWindow.datasets.map((row) => row.id), all.datasets.slice(1, 3).map((row) => row.id));
 });
+
+test('a published upload can be analysed, not just listed', async (t) => {
+  if (!ready(t)) return;
+  const account = await maintainer();
+  const name = `Analysable ${randomUUID()}`;
+  const response = await upload('published.csv', 'province,year,amount\nAbra,2024,1250000\nBenguet,2024,2400000\n', account.cookie, name);
+  const text = await responseText(response);
+  assert.equal(response.status, 201, text);
+  const { id } = JSON.parse(text) as { id: string };
+  // The selection policy ignores the ordered period column, so a runnable release needs a
+  // measure beside it; declare every column this draft carries.
+  const body = {
+    ...publishBody,
+    metadata: {
+      ...publishBody.metadata,
+      fields: [
+        { name: 'province', type: 'text', description: 'Province' },
+        { name: 'year', type: 'integer', description: 'Fiscal year' },
+        { name: 'amount', type: 'number', description: 'Amount in pesos' },
+      ],
+    },
+  };
+  const publish = await api(`/api/v1/imports/${id}/publish`, { method: 'POST', cookie: account.cookie, body });
+  const publishText = await responseText(publish);
+  assert.equal(publish.status, 201, publishText);
+  const releaseId = (JSON.parse(publishText) as { release_id: string }).release_id;
+
+  // The published rows must be in the analysis table, or the release is listed and
+  // unusable: insights read release_rows, not the draft's import_rows.
+  const catalog = await responseJson<{ datasets: Array<{ id: string; rowCount?: number }> }>(await api('/api/v1/datasets'));
+  assert.equal(catalog.datasets.find((row) => row.id === releaseId)?.rowCount, 2, 'the published release must report its stored rows');
+  // The declared field types must survive publication, or every recipe skips the release.
+  const listed = catalog.datasets.find((row) => row.id === releaseId) as { licenceStatus?: string; schema?: { columns?: Array<{ name: string; type: string }> } };
+  assert.equal(listed.licenceStatus, 'confirmed', 'a stated licence is a confirmation');
+  assert.ok((listed.schema?.columns ?? []).some((column) => column.name === 'year'), 'the published schema must carry the declared columns');
+
+  const run = await api('/api/v1/runs', { method: 'POST', cookie: account.cookie, body: { release_ids: [releaseId] } });
+  const runText = await responseText(run);
+  assert.equal(run.status, 201, runText);
+  const insights = (JSON.parse(runText) as { insights: Array<{ status: string }> }).insights;
+  assert.ok(insights.some((insight) => insight.status === 'ok'), 'a published upload with typed columns must produce at least one insight');
+});

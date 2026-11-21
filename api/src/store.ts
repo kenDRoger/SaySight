@@ -123,12 +123,41 @@ export async function publishImportDraft(input: {
     await client.query('BEGIN');
     await client.query('INSERT INTO publication_decisions (id, draft_id, actor_id, action, reason) VALUES ($1, $2, $3, $4, $5)',
       [randomUUID(), draft.id, input.actorId, 'publish', input.reason]);
+    // The declared field types are the schema a reader and the recipes rely on; without
+    // it every insight skips the release as "no numeric or categorical column". A stated
+    // licence is a confirmation, so it is recorded as such rather than "unconfirmed".
+    const columns = Array.isArray(input.metadata.fields)
+      ? (input.metadata.fields as Array<{ name?: unknown; type?: unknown }>)
+        .filter((field) => typeof field.name === 'string' && field.name.length > 0)
+        .map((field) => ({ name: String(field.name), type: typeof field.type === 'string' && field.type ? field.type : 'text' }))
+      : [];
+    const licence = typeof input.metadata.license === 'string' ? input.metadata.license.trim() : '';
     await client.query(
-      `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, licence_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [releaseId, draft.name, input.metadata.publisher, input.metadata.sourceUrl, releaseId, draft.checksum, input.metadata.license, 'current',
-        JSON.stringify({ ...input.metadata, publishedFrom: draft.publicId })],
+        JSON.stringify({ ...input.metadata, schema: { columns }, publishedFrom: draft.publicId }),
+        licence ? 'confirmed' : 'unconfirmed'],
     );
+    // A published upload must be analysable. The validated rows live in import_rows, so
+    // they are copied into the analysis table here; otherwise the release appears in the
+    // catalog with nothing to run on and every insight refuses it.
+    await client.query(
+      `INSERT INTO release_rows (release_id, row_number, data)
+       SELECT $1, r.row_number, r.data FROM import_rows r WHERE r.draft_id = $2
+       ON CONFLICT (release_id, row_number) DO NOTHING`,
+      [releaseId, draft.id],
+    );
+    // A CSV arrives with every value as text; the declared types are what make a column
+    // analysable, so numeric columns are cast here rather than left as strings.
+    for (const column of columns) {
+      if (column.type !== 'integer' && column.type !== 'number') continue;
+      await client.query(
+        `UPDATE release_rows SET data = jsonb_set(data, ARRAY[$2::text], to_jsonb((data->>$2)::numeric), false)
+         WHERE release_id = $1 AND data ? $2 AND (data->>$2) ~ '^-?[0-9]+(\.[0-9]+)?$'`,
+        [releaseId, column.name],
+      );
+    }
     await client.query("UPDATE import_drafts SET status = 'published' WHERE id = $1", [draft.id]);
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }

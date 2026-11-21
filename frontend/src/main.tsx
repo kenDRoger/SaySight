@@ -625,7 +625,15 @@ function App() {
         body: JSON.stringify({ reason: publishForm.reason, metadata: { publisher: publishForm.publisher, sourceUrl: publishForm.sourceUrl, license: publishForm.license, coverage: { fiscalYears }, fields, limitations } }),
       });
       setPublishStatus(`Published as ${result.release_id}.`);
+      // The panel must not keep saying "validated" after publishing, and the new release
+      // has to appear in the picker without a reload.
       setUploadDraft({ ...draft, status: 'published' });
+      setUploadStatus(`${draft.name} is published as ${result.release_id}. It is now available under Datasets.`);
+      setPublishForm({ reason: '', publisher: '', sourceUrl: '', license: '', fiscalYears: '', fields: '', limitations: '' });
+      fetch(`${apiBase}/api/v1/datasets`).then(async (response) => {
+        const body = await response.json() as { datasets?: Dataset[] };
+        if (response.ok && body.datasets) setDatasets(body.datasets);
+      }).catch(() => { /* the catalog keeps its previous list; the publish itself succeeded */ });
     } catch (reason) { setPublishError(failureMessage(reason, 'Could not publish the draft.')); }
     finally { setPublishing(false); }
   }

@@ -32,4 +32,8 @@ export const openStat: Connector = {
     });
     return { datasets, httpStatus: response.status };
   },
+  async fetchDataset() {
+    // /{dbid} lists tables, not observations; picking one needs a real query API.
+    throw new Error('openstat cannot be pinned yet: PxWeb table selection is not implemented');
+  },
 };

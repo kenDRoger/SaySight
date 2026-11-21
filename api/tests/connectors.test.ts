@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { connectors, getConnector } = await import('tsx/esm/api').then(async ({ tsImport }) =>
+const { connectors, getConnector, selectDataResource } = await import('tsx/esm/api').then(async ({ tsImport }) =>
   tsImport<typeof import('../src/connectors.ts')>('../src/connectors.ts', import.meta.url));
 
 // A fetch stand-in: tests never reach a portal.
@@ -114,4 +114,103 @@ test('the registry holds the four API connectors plus the link-out entries', () 
   assert.deepEqual(connectors.filter((connector) => connector.kind === 'api').map((connector) => connector.id), ['bettergov', 'hdx', 'worldbank', 'openstat']);
   assert.deepEqual(connectors.map((connector) => connector.protocol).slice(0, 4), ['json-rest', 'ckan', 'json-rest', 'pxweb']);
   assert.equal(getConnector('nope'), undefined);
+});
+
+// fetchDataset fixtures: every portal byte comes from an injected reader.
+const fetchFrom = (responses: Map<string, string>, calls: string[]): typeof fetch =>
+  (async (input: string | URL | Request) => {
+    const url = String(input);
+    calls.push(url);
+    const body = responses.get(url);
+    if (body === undefined) throw new Error(`unfixtured URL ${url}`);
+    return new Response(body, { status: 200 });
+  }) as unknown as typeof fetch;
+
+test('bettergov fetches the detail, the first downloadable resource, then its bytes', async () => {
+  const responses = new Map([
+    ['https://data.bettergov.ph/api/v1/datasets/gaa-coverage', JSON.stringify({
+      success: true,
+      data: { id: 'gaa-coverage', name: 'GAA coverage', description: 'Budget coverage by year', licence: 'CC BY 4.0',
+        attribution: [{ attribution_text: 'DBM open data' }] },
+    })],
+    ['https://data.bettergov.ph/api/v1/resources?dataset_id=gaa-coverage', JSON.stringify({
+      success: true,
+      data: [
+        { name: 'notes.pdf', format: 'PDF', url: 'https://data.bettergov.ph/files/notes.pdf' },
+        { name: 'gaa.csv', format: 'CSV', url: 'https://data.bettergov.ph/files/gaa.csv' },
+      ],
+    })],
+    ['https://data.bettergov.ph/files/gaa.csv', 'year,value\n2024,1\n'],
+  ]);
+  const calls: string[] = [];
+  const pinned = await getConnector('bettergov')!.fetchDataset('gaa-coverage', fetchFrom(responses, calls));
+  assert.deepEqual(calls, [...responses.keys()]);
+  assert.equal(Buffer.from(pinned.bytes).toString('utf8'), 'year,value\n2024,1\n');
+  assert.deepEqual({ filename: pinned.filename, format: pinned.format, licence: pinned.licence, attribution: pinned.attribution, name: pinned.name, description: pinned.description },
+    { filename: 'gaa.csv', format: 'csv', licence: 'CC BY 4.0', attribution: 'DBM open data', name: 'GAA coverage', description: 'Budget coverage by year' });
+});
+
+test('hdx fetches package_show, the first csv/json resource, then its bytes', async () => {
+  const responses = new Map([
+    ['https://data.humdata.org/api/3/action/package_show?id=phl-food-prices', JSON.stringify({
+      success: true,
+      result: { name: 'phl-food-prices', title: 'Philippines food prices', notes: 'Monthly prices', license_title: 'ODC-By',
+        organization: { title: 'WFP Philippines' },
+        resources: [
+          { name: 'prices.xlsx', format: 'XLSX', url: 'https://data.humdata.org/x.xlsx' },
+          { name: 'prices.csv', format: 'CSV', url: 'https://data.humdata.org/x.csv' },
+        ] },
+    })],
+    ['https://data.humdata.org/x.csv', 'date,price\n2024-01-01,10\n'],
+  ]);
+  const calls: string[] = [];
+  const pinned = await getConnector('hdx')!.fetchDataset('phl-food-prices', fetchFrom(responses, calls));
+  assert.deepEqual(calls, [...responses.keys()]);
+  assert.equal(Buffer.from(pinned.bytes).toString('utf8'), 'date,price\n2024-01-01,10\n');
+  assert.deepEqual({ filename: pinned.filename, format: pinned.format, licence: pinned.licence, attribution: pinned.attribution, name: pinned.name, description: pinned.description },
+    { filename: 'prices.csv', format: 'csv', licence: 'ODC-By', attribution: 'WFP Philippines', name: 'Philippines food prices', description: 'Monthly prices' });
+});
+
+test('worldbank serialises the indicator rows as JSON bytes', async () => {
+  const rows = [{ indicator: { id: 'SP.POP.TOTL', value: 'Population, total' }, country: { value: 'Philippines' }, date: '2023', value: 117337368 }];
+  const responses = new Map([
+    ['https://api.worldbank.org/v2/country/PHL/indicator/SP.POP.TOTL?format=json&per_page=1000',
+      JSON.stringify([{ page: 1, pages: 1, per_page: 1000, total: 1 }, rows])],
+  ]);
+  const calls: string[] = [];
+  const pinned = await getConnector('worldbank')!.fetchDataset('SP.POP.TOTL', fetchFrom(responses, calls));
+  assert.deepEqual(calls, [...responses.keys()]);
+  assert.deepEqual(JSON.parse(Buffer.from(pinned.bytes).toString('utf8')), rows);
+  assert.deepEqual({ filename: pinned.filename, format: pinned.format, attribution: pinned.attribution, name: pinned.name },
+    { filename: 'SP.POP.TOTL.json', format: 'json', attribution: 'World Bank open data', name: 'Population, total' });
+  assert.match(pinned.description, /external benchmark/);
+});
+
+test('openstat refuses pinning instead of pretending a table list is data', async () => {
+  await assert.rejects(getConnector('openstat')!.fetchDataset('DB1', networkForbidden),
+    { message: 'openstat cannot be pinned yet: PxWeb table selection is not implemented' });
+});
+
+test('link-outs refuse pinning with a named error', async () => {
+  for (const connector of connectors.filter((item) => item.kind === 'link-out')) {
+    await assert.rejects(connector.fetchDataset('anything', networkForbidden),
+      { message: `${connector.id} is a link-out and has no data to pin` });
+  }
+});
+
+test('resource selection skips provenance files and prefers the real data file', () => {
+  const chosen = selectDataResource([
+    { name: 'sources.json', url: 'https://example.org/sources.json', bytes: 2151, format: 'json' },
+    { name: 'facilities.json', url: 'https://example.org/facilities.json', bytes: 9457158, format: 'json' },
+    { name: 'README.md', url: 'https://example.org/README.md', bytes: 4000 },
+  ]);
+  assert.equal(chosen?.name, 'facilities.json');
+
+  // With only provenance files available, the largest is still chosen rather than nothing.
+  const onlyMetadata = selectDataResource([
+    { name: 'sources.json', url: 'https://example.org/sources.json', bytes: 2151, format: 'json' },
+  ]);
+  assert.equal(onlyMetadata?.name, 'sources.json');
+
+  assert.equal(selectDataResource([]), undefined);
 });

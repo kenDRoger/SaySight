@@ -5,6 +5,7 @@ import { createServer, connect } from 'node:net';
 import test, { after, before, type TestContext } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { Pool } from 'pg';
 
 const apiDir = fileURLToPath(new URL('..', import.meta.url));
 const databaseUrl = 'postgres://saysight:saysight-dev-only@localhost:5432/saysight';
@@ -1004,4 +1005,49 @@ test('an anonymous connector check is refused with 401', async (t) => {
   const response = await connectorCheck('bettergov');
   assert.equal(response.status, 401);
   assert.deepEqual(await responseJson<unknown>(response), { error: 'sign_in_required' });
+});
+
+// Pinning (MVP-E): the route is maintainer-only and append-only.
+
+const pinDataset = (id: string, body: unknown, cookie?: string) =>
+  api(`/api/v1/connectors/${id}/pin`, { method: 'POST', ...(cookie ? { cookie } : {}), body });
+
+const failedCheckCount = async (message: string): Promise<number> => {
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    const result = await pool.query('SELECT count(*)::int AS total FROM connector_checks WHERE status = $1 AND message = $2', ['failed', message]);
+    return Number(result.rows[0].total);
+  } finally { await pool.end(); }
+};
+
+test('pin route checks authentication before the connector', async (t) => {
+  if (!ready(t)) return;
+  const anonymous = await pinDataset('bettergov', { dataset_id: 'gaa-coverage' });
+  assert.equal(anonymous.status, 401);
+  assert.deepEqual(await responseJson<unknown>(anonymous), { error: 'sign_in_required' });
+  const submitter = await pinDataset('bettergov', { dataset_id: 'gaa-coverage' }, (await signIn('pin-submitter')).cookie);
+  assert.equal(submitter.status, 403);
+  assert.deepEqual(await responseJson<unknown>(submitter), { error: 'maintainer_required' });
+  const unknown = await pinDataset('no-such-portal', { dataset_id: 'gaa-coverage' }, (await maintainer()).cookie);
+  assert.equal(unknown.status, 404);
+  assert.deepEqual(await responseJson<unknown>(unknown), { error: 'connector_not_found' });
+});
+
+test('pinning a link-out is refused with the connector message', async (t) => {
+  if (!ready(t)) return;
+  const response = await pinDataset('cids', { dataset_id: 'anything' }, (await maintainer()).cookie);
+  assert.equal(response.status, 400);
+  assert.deepEqual(await responseJson<unknown>(response),
+    { error: 'link_out', message: 'cids is a link-out and has no data to pin' });
+});
+
+test('a failed pin writes one failed connector check and no release', async (t) => {
+  if (!ready(t)) return;
+  const message = 'openstat cannot be pinned yet: PxWeb table selection is not implemented';
+  const before = await failedCheckCount(message);
+  const response = await pinDataset('openstat', { dataset_id: 'DB1' }, (await maintainer()).cookie);
+  const text = await responseText(response);
+  assert.equal(response.status, 502, text);
+  assert.deepEqual(JSON.parse(text) as unknown, { error: 'connector_fetch_failed', message });
+  assert.equal(await failedCheckCount(message), before + 1);
 });

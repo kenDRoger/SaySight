@@ -4,7 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, insertConnectorCheck, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { inferReleaseSchema, licenceStatus, pinSummary, releaseKey } from './pin.js';
 import { connectors, getConnector } from './connectors.js';
 import { classifyCheck, computeDrift, sourceFingerprint, summarise, type ReleaseFingerprint } from './refresh.js';
 import { createExplainer } from './explain.js';
@@ -27,6 +28,13 @@ const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, (char) 
 const json = (response: import('node:http').ServerResponse, status: number, body: unknown) => {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(body));
+};
+
+const workerMessage = (body: string): string => {
+  try {
+    const parsed = JSON.parse(body) as { message?: unknown; error?: unknown };
+    return typeof parsed.message === 'string' ? parsed.message : typeof parsed.error === 'string' ? parsed.error : body;
+  } catch { return body; }
 };
 
 const maxUploadBytes = 100 * 1024 * 1024;
@@ -457,6 +465,67 @@ const server = createServer((request, response) => {
       await insertConnectorCheck({ connector: connector.id, status, httpStatus, datasetCount, message });
       json(response, status === 'ok' ? 200 : 502, { connector: connector.id, status, dataset_count: datasetCount, http_status: httpStatus, message });
     })().catch(() => json(response, 503, { error: 'connector_log_unavailable' }));
+    return;
+  }
+
+  const pinMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/connectors\/([^/]+)\/pin$/) : undefined;
+  if (pinMatch) {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
+      const connector = getConnector(pinMatch[1]);
+      if (!connector) { json(response, 404, { error: 'connector_not_found' }); return; }
+      let payload: { dataset_id?: unknown };
+      try { payload = JSON.parse(incoming.data.toString('utf8')) as { dataset_id?: unknown }; }
+      catch { json(response, 400, { error: 'invalid_json' }); return; }
+      if (typeof payload.dataset_id !== 'string' || !payload.dataset_id.trim()) { json(response, 400, { error: 'dataset_id_required' }); return; }
+      const datasetId = payload.dataset_id;
+
+      let pinned: Awaited<ReturnType<typeof connector.fetchDataset>>;
+      try { pinned = await connector.fetchDataset(datasetId, fetch); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (connector.kind === 'link-out') { json(response, 400, { error: 'link_out', message }); return; }
+        const named = /HTTP (\d{3})/.exec(message);
+        await insertConnectorCheck({ connector: connector.id, status: 'failed',
+          httpStatus: named ? Number(named[1]) : null, datasetCount: null, message }).catch(() => undefined);
+        json(response, 502, { error: 'connector_fetch_failed', message });
+        return;
+      }
+
+      const bytes = Buffer.from(pinned.bytes);
+      const checksum = createHash('sha256').update(bytes).digest('hex');
+      const key = releaseKey(connector.id, datasetId, checksum);
+      let storeResponse: Response;
+      try {
+        storeResponse = await workerFetch(`${workerUrl}/store-release?key=${encodeURIComponent(key)}&sha256=${checksum}`,
+          { method: 'POST', body: bytes as unknown as BodyInit });
+      } catch { json(response, 502, { error: 'release_store_failed', message: 'worker_unavailable' }); return; }
+      // A 409 names the same content-addressed key, so the immutable bytes are
+      // already present and the pin can continue without a second write.
+      if (!storeResponse.ok && storeResponse.status !== 409) {
+        json(response, 502, { error: 'release_store_failed', message: workerMessage(await storeResponse.text()) });
+        return;
+      }
+
+      try {
+        const existing = await findPinnedRelease(connector.id, datasetId, checksum);
+        if (existing) { json(response, 200, { release_id: existing, already_pinned: true }); return; }
+        const status = licenceStatus(pinned.licence);
+        const releaseId = await insertPinnedRelease({
+          connectorId: connector.id, datasetId, checksum, licenceStatus: status,
+          licence: pinned.licence, attribution: pinned.attribution, name: pinned.name, sourceUrl: connector.baseUrl,
+          metadata: { schema: inferReleaseSchema(pinned.bytes, pinned.format), description: pinned.description,
+            filename: pinned.filename, format: pinned.format, releaseKey: key },
+        });
+        json(response, 201, { release_id: releaseId, already_pinned: false,
+          summary: pinSummary(connector.id, datasetId, bytes.length, status) });
+      } catch { json(response, 503, { error: 'pin_unavailable' }); }
+    }).catch(() => json(response, 503, { error: 'pin_unavailable' }));
     return;
   }
 

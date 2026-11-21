@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Pool } from 'pg';
 import { catalog, type DatasetRelease } from './catalog.js';
 import type { CheckStatus, DriftReport, ReleaseFingerprint } from './refresh.js';
+import type { LicenceStatus } from './pin.js';
 
 export type Evidence = {
   id: string;
@@ -171,6 +172,32 @@ export async function datasetReleaseExists(id: string): Promise<boolean> {
   if (!pool) return catalog.some((item) => item.id === id);
   const result = await pool.query('SELECT 1 FROM dataset_releases WHERE id = $1', [id]);
   return result.rows.length > 0;
+}
+
+// A pinned release is a new row: a fetch-on-demand snapshot is never edited.
+export async function findPinnedRelease(connectorId: string, datasetId: string, checksum: string): Promise<string | undefined> {
+  if (!pool) return undefined;
+  const result = await pool.query(
+    'SELECT id FROM dataset_releases WHERE connector_id = $1 AND source_dataset_id = $2 AND checksum = $3 ORDER BY created_at LIMIT 1',
+    [connectorId, datasetId, checksum],
+  );
+  return result.rows[0]?.id as string | undefined;
+}
+
+export async function insertPinnedRelease(input: {
+  connectorId: string; datasetId: string; checksum: string; licenceStatus: LicenceStatus;
+  licence?: string; attribution: string; name: string; sourceUrl: string; metadata: Record<string, unknown>;
+}): Promise<string> {
+  if (!pool) throw new Error('database_required');
+  const id = `release-${randomUUID()}`;
+  await pool.query(
+    `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata,
+      connector_id, source_dataset_id, attribution, licence_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+    [id, input.name, input.attribution, input.sourceUrl, id, input.checksum, input.licence ?? '', 'current', JSON.stringify(input.metadata),
+      input.connectorId, input.datasetId, input.attribution, input.licenceStatus],
+  );
+  return id;
 }
 
 export type SavedView = { id: string; name: string; datasetReleaseId: string; filters: Record<string, unknown>; createdAt: string };

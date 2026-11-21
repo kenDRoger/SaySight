@@ -45,6 +45,16 @@ func newMux() *http.ServeMux {
 		}
 	})
 	mux.HandleFunc("/preview", previewHandler)
+	// The store is resolved per request so a missing S3 setting is a 503 here,
+	// not a startup failure for every other worker route.
+	mux.HandleFunc("/store-release", func(w http.ResponseWriter, r *http.Request) {
+		store, err := objectStoreFromEnv()
+		if err != nil || store == nil {
+			writeStoreReleaseError(w, http.StatusServiceUnavailable, "storage_unavailable", nil)
+			return
+		}
+		storeReleaseHandler(store)(w, r)
+	})
 	mux.HandleFunc("/records", recordsHandler)
 	mux.HandleFunc("/validate-import", jobs.wrap(importValidationHandler))
 	mux.HandleFunc("/normalize-import", jobs.wrap(importRowsHandler))

@@ -11,6 +11,8 @@ const fail = (status: number | undefined, detail: string) =>
 
 const text = (value: unknown): string | undefined => typeof value === 'string' && value ? value : undefined;
 
+const indicatorUrl = (id: string) => `${baseUrl}/country/PHL/indicator/${encodeURIComponent(id)}?format=json&per_page=1000`;
+
 export const worldBank: Connector = {
   id: 'worldbank',
   name: 'World Bank (Philippines)',
@@ -42,5 +44,24 @@ export const worldBank: Connector = {
       });
     }
     return { datasets: [...datasets.values()], httpStatus: response.status };
+  },
+  async fetchDataset(datasetId: string, fetchImpl: FetchImpl) {
+    const url = indicatorUrl(datasetId);
+    const response = await fetchImpl(url);
+    if (!response.ok) throw fail(response.status, `reading ${url} failed`);
+    let payload: unknown;
+    try { payload = await response.json(); } catch { throw fail(response.status, 'the body is not JSON'); }
+    if (!Array.isArray(payload) || !Array.isArray(payload[1])) throw fail(response.status, 'the payload is not [metadata, rows]');
+    const rows = payload[1] as unknown[];
+    const first = rows[0];
+    const indicator = first && typeof first === 'object' && 'indicator' in first && typeof first.indicator === 'object' && first.indicator !== null
+      ? first.indicator as Record<string, unknown> : undefined;
+    const country = first && typeof first === 'object' && 'country' in first && typeof first.country === 'object' && first.country !== null
+      ? first.country as Record<string, unknown> : undefined;
+    const name = text(indicator?.value) ?? datasetId;
+    const description = `World Bank indicator ${datasetId} for ${text(country?.value) ?? 'the Philippines'}; external benchmark, not Philippine government data`;
+    // The exact API rows are the snapshot: no reshaping that could drift later.
+    const bytes = new TextEncoder().encode(JSON.stringify(rows));
+    return { bytes, filename: `${datasetId}.json`, format: 'json', attribution: 'World Bank open data', name, description };
   },
 };

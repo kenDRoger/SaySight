@@ -1,9 +1,11 @@
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, listAgencies, getNormalizedCoverage, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { classifyCheck, computeDrift, sourceFingerprint, summarise, type ReleaseFingerprint } from './refresh.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
@@ -75,6 +77,28 @@ function readBoundedBody(request: IncomingMessage, limit: number): Promise<{ dat
     request.on('end', () => finish({ data: Buffer.concat(chunks) }));
     request.on('error', () => finish({ failed: true }));
   });
+}
+
+const maxSourceBytes = 10 * 1024 * 1024;
+
+// A source read is bounded: an oversized or unreadable response is recorded as
+// unreachable instead of stalling a maintainer's manual check.
+async function readSourceBytes(url: string): Promise<Buffer | undefined> {
+  try {
+    const fetched = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!fetched.ok || !fetched.body) return undefined;
+    const reader = fetched.body.getReader();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxSourceBytes) { await reader.cancel(); return undefined; }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, size);
+  } catch { return undefined; }
 }
 
 // Optional pagination for growing lists. With no parameters the response shape is
@@ -543,6 +567,39 @@ const server = createServer((request, response) => {
         response.writeHead(workerResponse.status, { 'content-type': 'application/json; charset=utf-8' }); response.end(await workerResponse.text());
       } catch { json(response, 503, { error: 'import_worker_unavailable' }); }
     });
+    return;
+  }
+
+  const refreshMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/datasets\/([^/]+)\/refresh-check$/) : undefined;
+  if (refreshMatch) {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    (async () => {
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
+      const previous = await getReleaseFingerprint(refreshMatch[1]);
+      if (!previous) { json(response, 404, { error: 'dataset_release_not_found' }); return; }
+      const sourceUrl = process.env.SOURCE_REFRESH_URL;
+      if (!sourceUrl) { json(response, 503, { error: 'source_check_unavailable' }); return; }
+      const bytes = await readSourceBytes(sourceUrl);
+      const sourceChecksum = bytes ? createHash('sha256').update(bytes).digest('hex') : undefined;
+      const status = classifyCheck(previous.checksum, sourceChecksum);
+      // shortcut: only JSON snapshots describe coverage drift; other bytes are
+      // checkable by checksum alone until the source publishes a schema.
+      let current: ReleaseFingerprint = { ...previous };
+      if (bytes && sourceChecksum) {
+        try { current = sourceFingerprint(JSON.parse(bytes.toString('utf8')), sourceChecksum); }
+        catch { current = { ...previous, checksum: sourceChecksum }; }
+      }
+      const drift = computeDrift(previous, current);
+      const summary = summarise(drift);
+      await insertReleaseCheck({
+        releaseId: refreshMatch[1], status, sourceChecksum: sourceChecksum ?? null,
+        previousChecksum: previous.checksum, drift,
+        note: status === 'unreachable' ? 'source could not be read' : '',
+      });
+      json(response, 200, { status, drift, summary });
+    })().catch(() => json(response, 503, { error: 'refresh_unavailable' }));
     return;
   }
 

@@ -120,7 +120,14 @@ try {
   console.log('OK raw JSON sits behind a disclosure');
 
   const analysis = await ok('/api/v1/analyze', undefined, { method: 'POST', body: JSON.stringify({ datasetReleaseId: release, recipe: 'summary' }) });
-  const finding = await ok('/api/v1/findings', submitterSession, { method: 'POST', body: JSON.stringify({ evidence_id: analysis.evidence_id }) });
+  // A finding requires a stated claim (gap 10), so the fixture states one.
+  const finding = await ok('/api/v1/findings', submitterSession, {
+    method: 'POST',
+    body: JSON.stringify({
+      evidence_id: analysis.evidence_id,
+      claim: `A11y fixture claim ${randomUUID()} for the review workflow check`,
+    }),
+  });
   assert.ok(finding.id, `finding response: ${JSON.stringify(finding)}`);
   console.log(`OK submitter created fixture finding ${finding.id}`);
 

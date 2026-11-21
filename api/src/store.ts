@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Pool } from 'pg';
 import { catalog, type DatasetRelease } from './catalog.js';
+import type { CheckStatus, DriftReport, ReleaseFingerprint } from './refresh.js';
 
 export type Evidence = {
   id: string;
@@ -197,6 +198,62 @@ export async function getNormalizedCoverage(releaseId: string): Promise<Normaliz
   );
   return result.rows.map((row) => ({ year: row.fiscal_year, status: row.coverage_status, rows: row.source_row_count,
     amount_pesos: row.amount_pesos === null ? null : Number(row.amount_pesos), scopes: row.scopes ?? {}, notes: row.notes ?? [] }));
+}
+
+export async function getReleaseFingerprint(releaseId: string): Promise<ReleaseFingerprint | undefined> {
+  if (!pool) return undefined;
+  const release = await pool.query('SELECT checksum, metadata FROM dataset_releases WHERE id = $1', [releaseId]);
+  const row = release.rows[0];
+  if (!row) return undefined;
+  const metadata = (row.metadata ?? {}) as { coverage?: { fiscalYears?: unknown }; fields?: unknown };
+  const coverage = await pool.query(
+    'SELECT fiscal_year, source_row_count FROM coverage_records WHERE dataset_release_id = $1 ORDER BY fiscal_year',
+    [releaseId],
+  );
+  const fiscalYears = Array.isArray(metadata.coverage?.fiscalYears)
+    ? (metadata.coverage.fiscalYears as unknown[]).filter((year): year is number => typeof year === 'number' && Number.isInteger(year)).sort((left, right) => left - right)
+    : coverage.rows.map((record: { fiscal_year: number }) => Number(record.fiscal_year));
+  const rowCounts: Record<string, number> = {};
+  for (const record of coverage.rows) rowCounts[String(record.fiscal_year)] = Number(record.source_row_count);
+  const fields = Array.isArray(metadata.fields)
+    ? metadata.fields.map((field: unknown) => typeof field === 'string' ? field
+      : field && typeof field === 'object' && 'name' in field ? String((field as { name: unknown }).name ?? '') : '').filter(Boolean)
+    : [];
+  return { checksum: String(row.checksum), fiscalYears, rowCounts, fields };
+}
+
+export type ReleaseCheck = {
+  id: string;
+  releaseId: string;
+  status: CheckStatus;
+  sourceChecksum: string | null;
+  previousChecksum: string;
+  drift: DriftReport;
+  note: string;
+  createdAt: string;
+};
+
+export async function insertReleaseCheck(input: Omit<ReleaseCheck, 'id' | 'createdAt'>): Promise<ReleaseCheck> {
+  if (!pool) throw new Error('database_required');
+  const check: ReleaseCheck = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
+  await pool.query(
+    `INSERT INTO release_checks (id, release_id, status, source_checksum, previous_checksum, drift, note)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [check.id, check.releaseId, check.status, check.sourceChecksum, check.previousChecksum, JSON.stringify(check.drift), check.note],
+  );
+  return check;
+}
+
+export async function listReleaseChecks(releaseId: string): Promise<ReleaseCheck[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id, release_id, status, source_checksum, previous_checksum, drift, note, created_at
+     FROM release_checks WHERE release_id = $1 ORDER BY created_at`,
+    [releaseId],
+  );
+  return result.rows.map((row) => ({ id: row.id, releaseId: row.release_id, status: row.status,
+    sourceChecksum: row.source_checksum, previousChecksum: row.previous_checksum, drift: row.drift,
+    note: row.note, createdAt: row.created_at.toISOString() }));
 }
 
 export async function saveNormalizedCoverage(rows: Array<{ DatasetReleaseID: string; FiscalYear: number; CoverageStatus: string; SourceRowCount: number; AmountPesos?: number; Scopes?: Record<string, unknown>; Notes: string[] }>, release: DatasetRelease): Promise<number> {

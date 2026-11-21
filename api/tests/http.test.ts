@@ -920,3 +920,27 @@ test('the JSON export downloads the same evidence and refuses unknown ids', asyn
   assert.equal(missing.status, 404);
   assert.deepEqual(await responseJson<unknown>(missing), { error: 'evidence_not_found' });
 });
+
+// Manual source refresh (gap 7). The test API is started without SOURCE_REFRESH_URL.
+
+test('a refresh check without a configured source is unavailable and writes nothing', async (t) => {
+  if (!ready(t)) return;
+  const releaseId = 'bettergov-gaa-coverage-2026-11-07';
+  const before = await responseText(await api('/api/v1/datasets'));
+  const response = await api(`/api/v1/datasets/${releaseId}/refresh-check`, { method: 'POST', cookie: (await maintainer()).cookie });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'source_check_unavailable' });
+  assert.equal(await responseText(await api('/api/v1/datasets')), before);
+});
+
+test('only a maintainer can request a refresh check and an unknown release is not found', async (t) => {
+  if (!ready(t)) return;
+  const releaseId = 'bettergov-gaa-coverage-2026-11-07';
+  const submitter = await signIn('refresh-submitter');
+  const denied = await api(`/api/v1/datasets/${releaseId}/refresh-check`, { method: 'POST', cookie: submitter.cookie });
+  assert.equal(denied.status, 403);
+  assert.deepEqual(await responseJson<unknown>(denied), { error: 'maintainer_required' });
+  const missing = await api(`/api/v1/datasets/${randomUUID()}/refresh-check`, { method: 'POST', cookie: (await maintainer()).cookie });
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await responseJson<unknown>(missing), { error: 'dataset_release_not_found' });
+});

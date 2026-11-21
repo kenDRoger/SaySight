@@ -87,6 +87,9 @@ services:
       EXPLANATION_PROVIDER_NAME: ${EXPLANATION_PROVIDER_NAME:-openai-compatible}
       EXPLANATION_API_KEY: ${EXPLANATION_API_KEY:-}
       EXPLANATION_TIMEOUT_MS: ${EXPLANATION_TIMEOUT_MS:-8000}
+      # Unset by default: without it a refresh check reports source_check_unavailable
+      # rather than pretending it re-read a source it could not reach.
+      SOURCE_REFRESH_URL: ${SOURCE_REFRESH_URL:-}
     ports:
       - "3000:3000"
     restart: unless-stopped

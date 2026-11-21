@@ -52,6 +52,17 @@ export function createAuth(
       return { sent: true };
     },
 
+    // Demo-only: opens a session for one of three fixed identities so someone judging
+    // the project can change roles without the email round trip. Every authorization
+    // rule downstream still applies; only the proof-of-identity step is skipped.
+    async openDemoSession(role: Role): Promise<{ sessionToken: string; user: User }> {
+      const user = await store.ensureUser(`demo-${role}@demo.invalid`, role);
+      if (user.status !== 'active') throw new Error('account_suspended');
+      const sessionToken = mintToken();
+      await store.createSession({ id: randomUUID(), userId: user.id, tokenHash: hashToken(sessionToken), expiresAt: now() + sessionTtlMs });
+      return { sessionToken, user };
+    },
+
     // Consumes the link once and opens a session. Expired, consumed, revoked, and
     // suspended-account links all fail the same way.
     async verify(rawToken: string): Promise<{ sessionToken: string; user: User } | undefined> {

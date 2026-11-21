@@ -48,6 +48,7 @@ type JoinedAnalysis = {
   finding_id?: string;
 };
 type User = { id: string; email: string; role: 'submitter' | 'reviewer' | 'maintainer' };
+const roleLabels: Record<User['role'], string> = { submitter: 'Submitter', reviewer: 'Reviewer', maintainer: 'Maintainer' };
 type Finding = { id: string; status: string; impact: string; claim?: string | null };
 type Transition = { fromStatus: string; toStatus: string; reason: string; createdAt: string };
 type FindingComment = { id: string; body: string; status: 'visible' | 'removed'; removalReason: string | null; createdAt: string };
@@ -228,6 +229,7 @@ function App() {
   const [claim, setClaim] = useState('');
   const [user, setUser] = useState<User>();
   const [sessionReady, setSessionReady] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
   const [email, setEmail] = useState('');
   const [requestingLink, setRequestingLink] = useState(false);
   const [sessionMessage, setSessionMessage] = useState('');
@@ -305,6 +307,17 @@ function App() {
   const selectedReleases = selectedIds.map((id) => datasets.find((item) => pickId(item) === id)).filter((item): item is Dataset => item !== undefined);
   const runEvidenceId = runResult?.insights.find((insight) => insight.evidence_id)?.evidence_id ?? '';
   const canRun = selectedReleases.length > 0 && (selectedReleases.length === 1 || (Boolean(leftKey) && Boolean(rightKey)));
+
+  // Demo-only: swap identity without the email round trip, then land where that role
+  // works so a reader judging the project never stalls on an empty screen.
+  async function switchDemoRole(role: User['role']) {
+    setSessionError('');
+    try {
+      const body = await apiRequest<{ user: User }>('/api/v1/auth/demo-session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role }) });
+      setUser(body.user);
+      window.location.hash = role === 'submitter' ? '#/findings' : '#/review';
+    } catch (reason) { setSessionError(failureMessage(reason, 'Demo role switch failed.')); }
+  }
 
   async function loadMoreFindings() {
     setPublicLoadingMore(true);
@@ -394,10 +407,17 @@ function App() {
     fetch(`${apiBase}/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/preview${query}`).then((response) => { if (!response.ok) throw new Error('Preview unavailable'); return response.json(); }).then((body: { matching_rows?: number }) => { setMatchingRows(body.matching_rows); setPreviewError(''); }).catch(() => { setMatchingRows(undefined); setPreviewError('Matching-row preview is unavailable.'); });
   }, [year, status, recipe, compareYears]);
 
+  // Read once directly: a signed-out visitor is a 401, and that response still has to
+  // tell the page whether demo mode is on or the role switcher could never appear.
   useEffect(() => {
-    apiRequest<{ user: User }>('/api/v1/auth/me')
-      .then((body) => setUser(body.user))
-      .catch((reason: unknown) => { if (failureStatus(reason) !== 401) setSessionError(failureMessage(reason, 'Account service unavailable.')); })
+    fetch(`${apiBase}/api/v1/auth/me`, { credentials: 'same-origin' })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({})) as { user?: User; demo?: boolean };
+        setDemoMode(body.demo === true);
+        if (response.ok && body.user) setUser(body.user);
+        else if (response.status !== 401) setSessionError('Account service unavailable.');
+      })
+      .catch(() => setSessionError('Account service unavailable.'))
       .finally(() => setSessionReady(true));
   }, []);
 
@@ -695,7 +715,13 @@ function App() {
         {tabs.map((tab) => <a key={tab.key} href={`#/${tab.key}`} className={view === tab.key ? 'tab tab-active' : 'tab'} aria-current={view === tab.key ? 'page' : undefined}>{tab.label}</a>)}
       </nav>
       <div className="account">
-        {!sessionReady ? <span className="muted">Checking account…</span> : user ? <>
+        {demoMode && <span className="demo-badge">Demo mode</span>}
+        {!sessionReady ? <span className="muted">Checking account…</span> : demoMode ? <>
+          <div className="role-switch" role="group" aria-label="Demo role">
+            {(['submitter', 'reviewer', 'maintainer'] as const).map((role) => <button key={role} type="button" className={user?.role === role ? 'chip chip-active' : 'chip'} aria-pressed={user?.role === role} onClick={() => switchDemoRole(role)}>{roleLabels[role]}</button>)}
+          </div>
+          {!user && <p role="status" className="muted">No role selected. Pick one to explore.</p>}
+        </> : user ? <>
           <p role="status" className="muted">Signed in as <strong>{user.email}</strong> ({user.role})</p>
           <Button type="button" variant="outline" size="sm" onClick={signOut}>Sign out</Button>
         </> : <details className="signin">
@@ -970,60 +996,6 @@ function App() {
           <h2>Sign in to keep work here</h2>
           <p>Browsing, filtering, and analysis are anonymous. An account is only needed to submit a finding, comment, review, or upload a dataset.</p>
         </div>}
-    {user && <section aria-labelledby="views-heading">
-      <Card className="card">
-      <h2 id="views-heading">Saved views</h2>
-      <p className="muted">Save the current recipe, fiscal year, coverage status, and comparison as a named view, or restore a saved one.</p>
-      <form onSubmit={saveView}>
-        <div className="form-field"><Label htmlFor="view-name">View name</Label><Input id="view-name" required maxLength={120} value={viewName} onChange={(event) => setViewName(event.target.value)} /></div>
-        <Button type="submit" variant="primary" size="md">Save current filters</Button>
-      </form>
-      <div className="pagination">
-        <div className="form-field"><Label htmlFor="views-limit">Saved views per page</Label><select id="views-limit" value={viewsLimit} onChange={(event) => setViewsLimit(event.target.value)}><option value="">Default</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
-        <div className="form-field"><Label htmlFor="views-offset">Saved views offset</Label><Input id="views-offset" type="number" min="0" inputMode="numeric" placeholder="0" value={viewsOffset} onChange={(event) => setViewsOffset(event.target.value)} /></div>
-      </div>
-      {viewsStatus && <p role="status" className="muted">{viewsStatus}</p>}
-      {viewsError && <p role="alert" className="error">{viewsError}</p>}
-      {savedViews.length === 0 ? <p>No saved views yet.</p> : <ul className="view-list">{savedViews.map((view) => <li key={view.id}>
-        <Button type="button" variant="outline" size="md" onClick={() => restoreView(view)}>Restore {view.name}</Button>
-        <p className="muted">{describeFilters(view.filters)} · saved {new Date(view.createdAt).toLocaleDateString()}</p>
-      </li>)}</ul>}
-      </Card>
-    </section>}
-    {user && <section aria-labelledby="upload-heading">
-      <Card className="card">
-      <h2 id="upload-heading">Upload a dataset draft</h2>
-      <p className="muted">CSV, JSON, XLSX, or Parquet. Every upload stays a private draft until a maintainer publishes it.</p>
-      <form onSubmit={registerUpload}>
-        <div className="form-field"><Label htmlFor="upload-file">Data file</Label><input id="upload-file" type="file" accept=".csv,.json,.xlsx,.parquet" required onChange={(event) => setUploadFile(event.target.files?.[0])} /></div>
-        <div className="form-field"><Label htmlFor="upload-name">Draft name</Label><Input id="upload-name" required maxLength={120} value={uploadName} onChange={(event) => setUploadName(event.target.value)} /></div>
-        <Button type="submit" variant="primary" size="md" disabled={!uploadFile}>Register draft</Button>
-      </form>
-      {uploadStatus && <p role="status" className="muted">{uploadStatus}</p>}
-      {uploadError && <p role="alert" className="error">{uploadError}</p>}
-      {uploadDraft && <div className="import-result">
-        <h3>Draft <code>{uploadDraft.id}</code></h3>
-        <p>Status: <strong>{uploadDraft.status}</strong> · Rows: <strong>{uploadDraft.validation?.rows ?? 0}</strong></p>
-        {uploadDraft.validation?.status && <p>Validation: <strong>{uploadDraft.validation.status}</strong></p>}
-        {uploadDraft.checkRows && <p>Row check: <strong>{uploadDraft.checkRows}</strong></p>}
-        {uploadDraft.validation?.checks && uploadDraft.validation.checks.length > 0 && <ul>{uploadDraft.validation.checks.map((check) => <li key={check}>{check}</li>)}</ul>}
-        {uploadDraft.status === 'quarantined' && <p role="alert" className="error">Quarantined ({uploadDraft.checkRows ?? 'schema_invalid'}): this draft is not published and cannot be published until it is corrected and re-uploaded.</p>}
-      </div>}
-      {maintainer && uploadDraft?.status === 'validated' && <form className="publish-form" onSubmit={(event) => publishDraft(event, uploadDraft)}>
-        <h3>Publish this validated draft</h3>
-        <div className="form-field"><Label htmlFor="publish-reason">Reason for publishing</Label><textarea id="publish-reason" required maxLength={2000} value={publishForm.reason} onChange={(event) => setPublishForm({ ...publishForm, reason: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-publisher">Publisher</Label><Input id="publish-publisher" required maxLength={200} value={publishForm.publisher} onChange={(event) => setPublishForm({ ...publishForm, publisher: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-source-url">Source URL</Label><Input id="publish-source-url" type="url" required value={publishForm.sourceUrl} onChange={(event) => setPublishForm({ ...publishForm, sourceUrl: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-license">License</Label><Input id="publish-license" required maxLength={200} value={publishForm.license} onChange={(event) => setPublishForm({ ...publishForm, license: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-fiscal-years">Fiscal years (comma separated)</Label><Input id="publish-fiscal-years" required placeholder="2024, 2025" value={publishForm.fiscalYears} onChange={(event) => setPublishForm({ ...publishForm, fiscalYears: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-fields">Field definitions, one per line as name:type:description</Label><textarea id="publish-fields" required placeholder="amount:number:Amount in pesos" value={publishForm.fields} onChange={(event) => setPublishForm({ ...publishForm, fields: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-limitations">Limitations, one per line</Label><textarea id="publish-limitations" value={publishForm.limitations} onChange={(event) => setPublishForm({ ...publishForm, limitations: event.target.value })} /></div>
-        <Button type="submit" variant="primary" size="md" isLoading={publishing} disabled={publishing}>{publishing ? 'Publishing…' : 'Publish draft'}</Button>
-        {publishStatus && <p role="status" className="muted">{publishStatus}</p>}
-        {publishError && <p role="alert" className="error">{publishError}</p>}
-      </form>}
-      </Card>
-    </section>}
     {reviewer && <section aria-labelledby="queue-heading">
       <Card className="card">
       <h2 id="queue-heading">Review queue</h2>
@@ -1084,6 +1056,60 @@ function App() {
           <Button type="submit" variant="primary" size="md">Post comment</Button>
         </form>}
       </>}
+      </Card>
+    </section>}
+    {user && <section aria-labelledby="views-heading">
+      <Card className="card">
+      <h2 id="views-heading">Saved views</h2>
+      <p className="muted">Save the current recipe, fiscal year, coverage status, and comparison as a named view, or restore a saved one.</p>
+      <form onSubmit={saveView}>
+        <div className="form-field"><Label htmlFor="view-name">View name</Label><Input id="view-name" required maxLength={120} value={viewName} onChange={(event) => setViewName(event.target.value)} /></div>
+        <Button type="submit" variant="primary" size="md">Save current filters</Button>
+      </form>
+      <div className="pagination">
+        <div className="form-field"><Label htmlFor="views-limit">Saved views per page</Label><select id="views-limit" value={viewsLimit} onChange={(event) => setViewsLimit(event.target.value)}><option value="">Default</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
+        <div className="form-field"><Label htmlFor="views-offset">Saved views offset</Label><Input id="views-offset" type="number" min="0" inputMode="numeric" placeholder="0" value={viewsOffset} onChange={(event) => setViewsOffset(event.target.value)} /></div>
+      </div>
+      {viewsStatus && <p role="status" className="muted">{viewsStatus}</p>}
+      {viewsError && <p role="alert" className="error">{viewsError}</p>}
+      {savedViews.length === 0 ? <p>No saved views yet.</p> : <ul className="view-list">{savedViews.map((view) => <li key={view.id}>
+        <Button type="button" variant="outline" size="md" onClick={() => restoreView(view)}>Restore {view.name}</Button>
+        <p className="muted">{describeFilters(view.filters)} · saved {new Date(view.createdAt).toLocaleDateString()}</p>
+      </li>)}</ul>}
+      </Card>
+    </section>}
+    {user && <section aria-labelledby="upload-heading">
+      <Card className="card">
+      <h2 id="upload-heading">Upload a dataset draft</h2>
+      <p className="muted">CSV, JSON, XLSX, or Parquet. Every upload stays a private draft until a maintainer publishes it.</p>
+      <form onSubmit={registerUpload}>
+        <div className="form-field"><Label htmlFor="upload-file">Data file</Label><input id="upload-file" type="file" accept=".csv,.json,.xlsx,.parquet" required onChange={(event) => setUploadFile(event.target.files?.[0])} /></div>
+        <div className="form-field"><Label htmlFor="upload-name">Draft name</Label><Input id="upload-name" required maxLength={120} value={uploadName} onChange={(event) => setUploadName(event.target.value)} /></div>
+        <Button type="submit" variant="primary" size="md" disabled={!uploadFile}>Register draft</Button>
+      </form>
+      {uploadStatus && <p role="status" className="muted">{uploadStatus}</p>}
+      {uploadError && <p role="alert" className="error">{uploadError}</p>}
+      {uploadDraft && <div className="import-result">
+        <h3>Draft <code>{uploadDraft.id}</code></h3>
+        <p>Status: <strong>{uploadDraft.status}</strong> · Rows: <strong>{uploadDraft.validation?.rows ?? 0}</strong></p>
+        {uploadDraft.validation?.status && <p>Validation: <strong>{uploadDraft.validation.status}</strong></p>}
+        {uploadDraft.checkRows && <p>Row check: <strong>{uploadDraft.checkRows}</strong></p>}
+        {uploadDraft.validation?.checks && uploadDraft.validation.checks.length > 0 && <ul>{uploadDraft.validation.checks.map((check) => <li key={check}>{check}</li>)}</ul>}
+        {uploadDraft.status === 'quarantined' && <p role="alert" className="error">Quarantined ({uploadDraft.checkRows ?? 'schema_invalid'}): this draft is not published and cannot be published until it is corrected and re-uploaded.</p>}
+      </div>}
+      {maintainer && uploadDraft?.status === 'validated' && <form className="publish-form" onSubmit={(event) => publishDraft(event, uploadDraft)}>
+        <h3>Publish this validated draft</h3>
+        <div className="form-field"><Label htmlFor="publish-reason">Reason for publishing</Label><textarea id="publish-reason" required maxLength={2000} value={publishForm.reason} onChange={(event) => setPublishForm({ ...publishForm, reason: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-publisher">Publisher</Label><Input id="publish-publisher" required maxLength={200} value={publishForm.publisher} onChange={(event) => setPublishForm({ ...publishForm, publisher: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-source-url">Source URL</Label><Input id="publish-source-url" type="url" required value={publishForm.sourceUrl} onChange={(event) => setPublishForm({ ...publishForm, sourceUrl: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-license">License</Label><Input id="publish-license" required maxLength={200} value={publishForm.license} onChange={(event) => setPublishForm({ ...publishForm, license: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-fiscal-years">Fiscal years (comma separated)</Label><Input id="publish-fiscal-years" required placeholder="2024, 2025" value={publishForm.fiscalYears} onChange={(event) => setPublishForm({ ...publishForm, fiscalYears: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-fields">Field definitions, one per line as name:type:description</Label><textarea id="publish-fields" required placeholder="amount:number:Amount in pesos" value={publishForm.fields} onChange={(event) => setPublishForm({ ...publishForm, fields: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-limitations">Limitations, one per line</Label><textarea id="publish-limitations" value={publishForm.limitations} onChange={(event) => setPublishForm({ ...publishForm, limitations: event.target.value })} /></div>
+        <Button type="submit" variant="primary" size="md" isLoading={publishing} disabled={publishing}>{publishing ? 'Publishing…' : 'Publish draft'}</Button>
+        {publishStatus && <p role="status" className="muted">{publishStatus}</p>}
+        {publishError && <p role="alert" className="error">{publishError}</p>}
+      </form>}
       </Card>
     </section>}
       </>}

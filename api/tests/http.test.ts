@@ -291,7 +291,8 @@ test('/auth/logout returns 204 and revokes the session cookie', async (t) => {
   assert.equal(response.status, 204);
   const afterLogout = await api('/api/v1/auth/me', { cookie });
   assert.equal(afterLogout.status, 401);
-  assert.deepEqual(await responseJson<unknown>(afterLogout), { error: 'not_signed_in' });
+  // A signed-out client still has to learn whether demo mode is on.
+  assert.deepEqual(await responseJson<unknown>(afterLogout), { error: 'not_signed_in', demo: false });
 });
 
 // Maintainer bootstrap and role assignment.

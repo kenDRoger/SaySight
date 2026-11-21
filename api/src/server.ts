@@ -231,6 +231,10 @@ const auth = pool
     })
   : undefined;
 const cookieSecure = process.env.COOKIE_SECURE === 'true';
+// shortcut: demo role switching bypasses proof of identity, remove before any real
+// deployment. Off unless SAYSIGHT_DEMO_ROLES=1, so the default stack stays safe.
+const demoRoles = process.env.SAYSIGHT_DEMO_ROLES === '1';
+if (demoRoles) console.warn('SAYSIGHT_DEMO_ROLES is on: POST /api/v1/auth/demo-session grants a session for any role, including maintainer. Demo use only.');
 // Explanations only rephrase an existing result. With no provider configured the
 // explainer answers with the deterministic template, which is the required fallback.
 const explanationEndpoint = process.env.EXPLANATION_PROVIDER_ENDPOINT;
@@ -288,6 +292,27 @@ const server = createServer((request, response) => {
     return;
   }
 
+  if (request.method === 'POST' && request.url === '/api/v1/auth/demo-session') {
+    // Closed by default: with the flag off this route is indistinguishable from a
+    // route that does not exist, and a test pins that.
+    if (!demoRoles) { json(response, 404, { error: 'demo_mode_disabled' }); return; }
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      let payload: unknown;
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const role = payload && typeof payload === 'object' && 'role' in payload ? (payload as { role?: unknown }).role : undefined;
+      if (role !== 'submitter' && role !== 'reviewer' && role !== 'maintainer') { json(response, 400, { error: 'invalid_role' }); return; }
+      try {
+        const session = await auth.openDemoSession(role);
+        response.writeHead(201, { 'content-type': 'application/json; charset=utf-8', 'set-cookie': serializeSessionCookie(session.sessionToken, cookieSecure) });
+        response.end(JSON.stringify({ user: { id: session.user.id, email: session.user.email, role: session.user.role } }));
+      } catch { json(response, 503, { error: 'accounts_unavailable' }); }
+    });
+    return;
+  }
+
   const verifyMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/auth\/verify\?token=([^&]+)$/) : undefined;
   if (verifyMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
@@ -309,7 +334,7 @@ const server = createServer((request, response) => {
   if (request.method === 'GET' && request.url === '/api/v1/auth/me') {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
     auth.session(requestSessionToken(request)).then((user) =>
-      user ? json(response, 200, { user: { id: user.id, email: user.email, role: user.role } }) : json(response, 401, { error: 'not_signed_in' }))
+      user ? json(response, 200, { user: { id: user.id, email: user.email, role: user.role }, demo: demoRoles }) : json(response, 401, { error: 'not_signed_in', demo: demoRoles }))
       .catch(() => json(response, 503, { error: 'accounts_unavailable' }));
     return;
   }

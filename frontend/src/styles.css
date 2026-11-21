@@ -56,6 +56,8 @@ a:hover { text-decoration-thickness: 2px; }
 .tab-active { background: var(--ink); color: #fff; }
 .tab-active:hover { background: var(--ink); color: #fff; }
 .account { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: .5rem; font-size: .9rem; }
+.demo-badge { padding: .15rem .5rem; font-size: .75rem; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; color: #4a3b6b; background: #efecf7; border: 1px solid #cfc6e6; border-radius: 999px; }
+.role-switch { display: flex; flex-wrap: wrap; gap: .3rem; }
 .signin summary { cursor: pointer; padding: .4rem .6rem; border: 1px solid var(--line-strong); border-radius: 8px; font-weight: 650; }
 .signin form { margin-top: .75rem; max-width: 22rem; }
 .signin p { max-width: 24rem; }

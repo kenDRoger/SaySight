@@ -38,3 +38,6 @@ postgres-data/
 object-data/
 api/data/
 
+
+# Python bytecode from the verification suites
+__pycache__/

@@ -251,6 +251,8 @@ function App() {
   const [releases, setReleases] = useState<Dataset[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetsError, setDatasetsError] = useState('');
+  const [datasetQuery, setDatasetQuery] = useState('');
+  const [showAllDatasets, setShowAllDatasets] = useState(false);
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [connectorsError, setConnectorsError] = useState('');
   const [checkResults, setCheckResults] = useState<Record<string, { ok: boolean; text: string }>>({});
@@ -304,6 +306,22 @@ function App() {
   // Queue filters ride along with pagination; untouched controls add no parameter.
   const queueQuery = () => pageQuery(queueLimit, queueOffset, { status: queueFilterStatus, impact: queueFilterImpact, q: queueFilterQuery.trim() });
   // Selection order is join order: the first pick is the left side of the join.
+  // A reader picks one or two of a few hundred releases, so the list is searchable, the
+  // verified release leads, test fixtures sink to the back, and a page of fifteen keeps it
+  // scannable. A selected release is never hidden.
+  const datasetMatches = (release: Dataset) => {
+    const query = datasetQuery.trim().toLowerCase();
+    if (!query) return true;
+    return [release.name, release.publisher, release.agencyId ?? ''].some((value) => value.toLowerCase().includes(query));
+  };
+  const visibleDatasets = datasets
+    .filter((release) => datasetMatches(release) || selectedIds.includes(pickId(release)))
+    .sort((left, right) => {
+      const rank = (release: Dataset) => (isTestFixture(release) ? 1 : 0);
+      const featured = (release: Dataset) => (release.publisher === 'BetterGovPH' ? 0 : 1);
+      return rank(left) - rank(right) || featured(left) - featured(right) || left.name.localeCompare(right.name);
+    });
+  const shownDatasets = showAllDatasets ? visibleDatasets : visibleDatasets.slice(0, 15);
   const selectedReleases = selectedIds.map((id) => datasets.find((item) => pickId(item) === id)).filter((item): item is Dataset => item !== undefined);
   const runEvidenceId = runResult?.insights.find((insight) => insight.evidence_id)?.evidence_id ?? '';
   const canRun = selectedReleases.length > 0 && (selectedReleases.length === 1 || (Boolean(leftKey) && Boolean(rightKey)));
@@ -782,7 +800,7 @@ function App() {
         </div>
     <section aria-labelledby="dataset-heading">
       <Card className="card">
-      <h2 id="dataset-heading">Dataset catalog</h2>
+      <h2 id="dataset-heading">Featured release</h2>
       <p className="muted">One verified release is the working dataset. Other entries are published releases and test fixtures; each lists its agency, region, and freshness so you can judge it before using it.</p>
       <div className="filter-row">
         <div className="form-field"><Label htmlFor="catalog-query">Search releases</Label><Input id="catalog-query" type="search" value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} placeholder="Name, publisher, release, or agency" /></div>
@@ -843,12 +861,14 @@ function App() {
     </section>
     <section aria-labelledby="picks-heading">
       <Card className="card">
-      <h2 id="picks-heading">Datasets</h2>
+      <h2 id="picks-heading">Choose releases</h2>
       <p className="muted">Pick one release to analyse on its own, or two releases to join. At most two are selected at a time; click a selected release again to drop it.</p>
       {datasetsError && <p role="alert" className="error">{datasetsError}</p>}
       {datasets.length === 0 && !datasetsError && <p className="muted">Loading datasets…</p>}
+      {datasets.length > 0 && <div className="form-field"><Label htmlFor="dataset-query">Search releases to choose</Label><Input id="dataset-query" type="search" value={datasetQuery} onChange={(event) => setDatasetQuery(event.target.value)} placeholder="Name, publisher, or agency" /></div>}
+      {datasets.length > 0 && <p className="muted" role="status">Showing {shownDatasets.length} of {visibleDatasets.length} releases{visibleDatasets.length !== datasets.length ? ` (${datasets.length} in total)` : ''}.</p>}
       <ul className="dataset-list">
-        {datasets.map((release) => {
+        {shownDatasets.map((release) => {
           const id = pickId(release);
           const checked = selectedIds.includes(id);
           return <li key={id}>
@@ -860,6 +880,8 @@ function App() {
           </li>;
         })}
       </ul>
+      {!showAllDatasets && visibleDatasets.length > shownDatasets.length && <div className="more"><Button type="button" variant="outline" size="md" onClick={() => setShowAllDatasets(true)}>Show all {visibleDatasets.length} releases</Button></div>}
+      {showAllDatasets && visibleDatasets.length > 15 && <div className="more"><Button type="button" variant="outline" size="md" onClick={() => setShowAllDatasets(false)}>Show the first 15 again</Button></div>}
       {selectedReleases.length > 0 && <h3>Columns of the selected releases</h3>}
       {selectedReleases.map((release) => {
         const columns = release.metadata?.schema?.columns ?? [];

@@ -43,3 +43,10 @@ demo address reaches the header, and that axe is clean at 1280px and 375px.
 
 It fails rather than skips when the flag is off, because a check that silently skips
 proves nothing.
+
+## Two configurations, not one
+
+`ui.mjs` and `audit.mjs` sign in through the magic link, so they need demo mode **off**;
+`demo.mjs` needs it **on**. Both harnesses now refuse to run in the wrong configuration
+with a one-line explanation instead of a 30-second timeout, because a suite that fails
+for the wrong reason teaches nothing.

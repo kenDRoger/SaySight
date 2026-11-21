@@ -18,6 +18,14 @@ import { AxeBuilder } from '@axe-core/playwright';
 
 const api = process.env.API_URL ?? 'http://localhost:3000';
 const app = process.env.APP_URL ?? 'http://localhost:5173';
+
+// This suite signs in through the magic link, which demo mode replaces with the role
+// switcher. Say so immediately instead of timing out on a control that is not there.
+const demoState = await fetch(`${api}/api/v1/auth/me`).then((response) => response.json()).catch(() => ({}));
+if (demoState.demo === true) {
+  console.error('demo mode is on: this suite signs in through the magic link. Restart the API without SAYSIGHT_DEMO_ROLES, or run `npm run demo` instead.');
+  process.exit(1);
+}
 const release = 'bettergov-gaa-coverage-2026-11-07';
 const widths = (process.env.WIDTHS ?? '1280,375').split(',').map((value) => Number(value.trim()));
 const composeFile = resolve(dirname(fileURLToPath(import.meta.url)), '../..', 'docker-compose.yml');

@@ -7,6 +7,14 @@ import { obtainSession } from './audit.mjs';
 
 const api = process.env.API_URL ?? 'http://localhost:3000';
 const app = process.env.APP_URL ?? 'http://localhost:5173';
+
+// This suite signs in through the magic link, which demo mode replaces with the role
+// switcher. Say so immediately instead of timing out on a control that is not there.
+const demoState = await fetch(`${api}/api/v1/auth/me`).then((response) => response.json()).catch(() => ({}));
+if (demoState.demo === true) {
+  console.error('demo mode is on: this suite signs in through the magic link. Restart the API without SAYSIGHT_DEMO_ROLES, or run `npm run demo` instead.');
+  process.exit(1);
+}
 const release = 'bettergov-gaa-coverage-2026-11-07';
 const maintainerEmail = process.env.SAYSIGHT_MAINTAINER_EMAIL ?? 'maintainer@example.org';
 const submitterEmail = `a11y-submitter-${Date.now()}@example.org`;
@@ -62,7 +70,7 @@ try {
   });
   await maintainerPage.reload({ timeout });
   await openView(maintainerPage, 'Datasets');
-  const catalog = maintainerPage.getByRole('region', { name: 'Dataset catalog' });
+  const catalog = maintainerPage.getByRole('region', { name: 'Featured release' });
   await catalog.getByText('Philippine General Appropriations Act coverage, FY2000–FY2026').first().waitFor();
   assert.ok((await catalog.textContent()).includes('current'), 'catalog freshness status is missing');
   console.log('OK catalog shows the release with agency and freshness metadata');

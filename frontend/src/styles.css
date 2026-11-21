@@ -36,11 +36,13 @@ a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px
 a:hover { text-decoration-thickness: 2px; }
 
 /* ---------- shell ---------- */
+/* Flex, not a three-column grid: with the role switcher present the account cluster grew
+   and a fixed 1fr middle column wrapped the tabs onto three lines at 1280px. */
 .topbar {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: .75rem 1.5rem;
+  gap: .6rem 1.25rem;
   box-sizing: border-box;
   max-width: 72rem;
   margin: 0 auto;
@@ -55,7 +57,7 @@ a:hover { text-decoration-thickness: 2px; }
 .tab:hover { background: #e9eef1; color: var(--ink); }
 .tab-active { background: var(--ink); color: #fff; }
 .tab-active:hover { background: var(--ink); color: #fff; }
-.account { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: .5rem; font-size: .9rem; }
+.account { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-left: auto; font-size: .9rem; }
 .demo-badge { padding: .15rem .5rem; font-size: .75rem; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; color: #4a3b6b; background: #efecf7; border: 1px solid #cfc6e6; border-radius: 999px; }
 .role-switch { display: flex; flex-wrap: wrap; gap: .3rem; }
 .signin summary { cursor: pointer; padding: .4rem .6rem; border: 1px solid var(--line-strong); border-radius: 8px; font-weight: 650; }
@@ -184,8 +186,8 @@ th, td { text-align: left; vertical-align: top; padding: .45rem .5rem; border-bo
 .chart-figure rect:focus-visible, .chart-figure circle:focus-visible { outline: none; stroke: var(--ink); stroke-width: 3px; }
 
 @media (max-width: 46rem) {
-  .topbar { grid-template-columns: 1fr; align-items: start; }
-  .account { justify-content: start; }
+  .topbar { align-items: start; }
+  .account { margin-left: 0; }
   main { padding: 1.25rem 1rem 2.5rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }

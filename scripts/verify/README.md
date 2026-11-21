@@ -32,3 +32,14 @@ What each suite proves:
 These suites create real rows in the local database — findings, drafts, releases,
 and joined evidence — because that is what the API does. Use a local database
 you are willing to keep.
+
+## Demo-mode browser check
+
+`cd scripts/a11y && BROWSER_PATH=/usr/bin/brave npm run demo` requires an API started
+with `SAYSIGHT_DEMO_ROLES=1`. It is not part of `clean-volume.sh`, which runs the default
+stack: it asserts the switcher appears before sign-in, that Reviewer lands on the queue,
+that a Submitter loses the queue, that Maintainer reaches publication, that no internal
+demo address reaches the header, and that axe is clean at 1280px and 375px.
+
+It fails rather than skips when the flag is off, because a check that silently skips
+proves nothing.

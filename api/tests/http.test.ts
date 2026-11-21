@@ -1250,10 +1250,37 @@ test('the public finding page states the real status, not a fixed Unverified', a
 
 test('a malformed record id is not found, not a store outage', async (t) => {
   if (!ready(t)) return;
-  const finding = await api('/api/v1/findings/not-a-uuid');
-  assert.equal(finding.status, 404);
-  assert.equal((await responseJson<{ error: string }>(finding)).error, 'finding_not_found');
-  const evidence = await api('/api/v1/evidence/not-a-uuid');
-  assert.equal(evidence.status, 404);
-  assert.equal((await responseJson<{ error: string }>(evidence)).error, 'evidence_not_found');
+  // Every read of a findings or evidence record, including its sub-resources: a bad id
+  // must never reach the store and come back as a 503.
+  for (const path of ['/api/v1/findings/not-a-uuid', '/api/v1/findings/not-a-uuid/page', '/api/v1/findings/not-a-uuid/history',
+    '/api/v1/findings/not-a-uuid/comments', '/api/v1/findings/not-a-uuid/explanation']) {
+    assert.equal((await api(path)).status, 404, path);
+  }
+  for (const path of ['/api/v1/evidence/not-a-uuid', '/api/v1/evidence/not-a-uuid/export.csv', '/api/v1/evidence/not-a-uuid/export.json']) {
+    assert.equal((await api(path)).status, 404, path);
+  }
+  assert.equal((await responseJson<{ error: string }>(await api('/api/v1/findings/not-a-uuid'))).error, 'finding_not_found');
+  assert.equal((await responseJson<{ error: string }>(await api('/api/v1/evidence/not-a-uuid'))).error, 'evidence_not_found');
+  // A well-formed id that does not exist still reaches the store and is also 404.
+  assert.equal((await api('/api/v1/findings/00000000-0000-0000-0000-000000000000')).status, 404);
+});
+
+test('the CSV export quotes the filters cell so a JSON value survives a round trip', async (t) => {
+  if (!ready(t)) return;
+  const evidence = await responseJson<{ evidence_id: string }>(await api('/api/v1/analyze', {
+    method: 'POST', body: { recipe: 'summary', year: 2024, status: 'published_source_baseline' },
+  }));
+  const csv = await responseText(await api(`/api/v1/evidence/${evidence.evidence_id}/export.csv`));
+  // The cell holds JSON, so its own quotes are doubled and the whole cell is quoted.
+  assert.ok(csv.includes('"{""status"":""published_source_baseline"",""year"":2024}"'), csv.split('\n').slice(0, 12).join('\n'));
+});
+
+test('pagination windows rows without changing the default response', async (t) => {
+  if (!ready(t)) return;
+  const all = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets'));
+  const firstTwo = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets?limit=2'));
+  const offsetWindow = await responseJson<{ datasets: Array<{ id: string }> }>(await api('/api/v1/datasets?limit=2&offset=1'));
+  assert.equal(firstTwo.datasets.length, 2);
+  assert.deepEqual(firstTwo.datasets.map((row) => row.id), all.datasets.slice(0, 2).map((row) => row.id));
+  assert.deepEqual(offsetWindow.datasets.map((row) => row.id), all.datasets.slice(1, 3).map((row) => row.id));
 });

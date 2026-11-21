@@ -370,6 +370,17 @@ const server = createServer((request, response) => {
     return;
   }
 
+  // Every record id in these two resources is a UUID. An id that cannot exist is a 404
+  // here, so no handler passes it to Postgres and reports a cast error as an outage.
+  const recordPath = request.url?.match(/^\/api\/v1\/(findings|evidence)\/([^/?#]+)/);
+  if (recordPath) {
+    const id = decodeURIComponent(recordPath[2]);
+    if (!recordId.test(id)) {
+      json(response, 404, { error: recordPath[1] === 'findings' ? 'finding_not_found' : 'evidence_not_found' });
+      return;
+    }
+  }
+
   const decisionMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/decisions$/) : undefined;
   if (decisionMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
@@ -1158,7 +1169,6 @@ const server = createServer((request, response) => {
 
   const findingMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)$/) : undefined;
   if (findingMatch) {
-    if (!recordId.test(findingMatch[1])) { json(response, 404, { error: 'finding_not_found' }); return; }
     getFinding(findingMatch[1]).then((finding) => finding ? json(response, 200, finding) : json(response, 404, { error: 'finding_not_found' })).catch(() => json(response, 503, { error: 'finding_store_unavailable' }));
     return;
   }
@@ -1180,7 +1190,6 @@ const server = createServer((request, response) => {
 
   const evidenceMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/evidence\/([^/]+)$/) : undefined;
   if (evidenceMatch) {
-    if (!recordId.test(evidenceMatch[1])) { json(response, 404, { error: 'evidence_not_found' }); return; }
     getEvidence(evidenceMatch[1]).then((evidence) => evidence ? json(response, 200, evidence) : json(response, 404, { error: 'evidence_not_found' })).catch(() => json(response, 503, { error: 'evidence_store_unavailable' }));
     return;
   }

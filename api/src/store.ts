@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { catalog, type DatasetRelease } from './catalog.js';
 import type { CheckStatus, DriftReport, ReleaseFingerprint } from './refresh.js';
 import type { LicenceStatus } from './pin.js';
@@ -174,6 +174,29 @@ export async function datasetReleaseExists(id: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+type ReleaseRowPage = { offset: number; rows: Array<Record<string, unknown>> };
+
+const writeReleaseRows = async (client: PoolClient, releaseId: string, offset: number, rows: Array<Record<string, unknown>>): Promise<number> => {
+  if (!rows.length) return 0;
+  const params: unknown[] = [releaseId];
+  const tuples = rows.map((_, index) => `($1, $${index * 2 + 2}, $${index * 2 + 3}::jsonb)`);
+  rows.forEach((row, index) => params.push(offset + index + 1, JSON.stringify(row)));
+  await client.query(`INSERT INTO release_rows (release_id, row_number, data) VALUES ${tuples.join(', ')}`, params);
+  return rows.length;
+};
+
+// Derived input can be re-imported; the pinned bytes and release stay immutable.
+export async function saveReleaseRows(releaseId: string, offset: number, rows: Array<Record<string, unknown>>): Promise<number> {
+  if (!pool || !rows.length) return 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const saved = await writeReleaseRows(client, releaseId, offset, rows);
+    await client.query('COMMIT');
+    return saved;
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+}
+
 // A pinned release is a new row: a fetch-on-demand snapshot is never edited.
 export async function findPinnedRelease(connectorId: string, datasetId: string, checksum: string): Promise<string | undefined> {
   if (!pool) return undefined;
@@ -187,17 +210,49 @@ export async function findPinnedRelease(connectorId: string, datasetId: string, 
 export async function insertPinnedRelease(input: {
   connectorId: string; datasetId: string; checksum: string; licenceStatus: LicenceStatus;
   licence?: string; attribution: string; name: string; sourceUrl: string; metadata: Record<string, unknown>;
+  rows?: ReleaseRowPage[];
 }): Promise<string> {
   if (!pool) throw new Error('database_required');
   const id = `release-${randomUUID()}`;
-  await pool.query(
-    `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata,
-      connector_id, source_dataset_id, attribution, licence_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-    [id, input.name, input.attribution, input.sourceUrl, id, input.checksum, input.licence ?? '', 'current', JSON.stringify(input.metadata),
-      input.connectorId, input.datasetId, input.attribution, input.licenceStatus],
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Rows reference a release that is not yet visible; the FK is deferred to
+    // this transaction's commit, so readers never see a half-pinned release.
+    for (const page of input.rows ?? []) await writeReleaseRows(client, id, page.offset, page.rows);
+    await client.query(
+      `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata,
+        connector_id, source_dataset_id, attribution, licence_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [id, input.name, input.attribution, input.sourceUrl, id, input.checksum, input.licence ?? '', 'current', JSON.stringify(input.metadata),
+        input.connectorId, input.datasetId, input.attribution, input.licenceStatus],
+    );
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   return id;
+}
+
+export async function getReleaseRows(releaseId: string, limit?: number): Promise<Array<Record<string, unknown>>> {
+  if (!pool) return [];
+  const bounded = limit !== undefined && Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : undefined;
+  const result = await pool.query(
+    `SELECT data FROM release_rows WHERE release_id = $1 ORDER BY row_number${bounded === undefined ? '' : ' LIMIT $2'}`,
+    bounded === undefined ? [releaseId] : [releaseId, bounded],
+  );
+  return result.rows.map((row) => row.data as Record<string, unknown>);
+}
+
+export async function countReleaseRows(releaseId: string): Promise<number> {
+  if (!pool) return 0;
+  const result = await pool.query('SELECT count(*)::int AS total FROM release_rows WHERE release_id = $1', [releaseId]);
+  return Number(result.rows[0]?.total ?? 0);
+}
+
+export async function getReleaseRowSchema(releaseId: string): Promise<Record<string, unknown> | undefined> {
+  if (!pool) return undefined;
+  const result = await pool.query("SELECT metadata->'schema' AS schema FROM dataset_releases WHERE id = $1", [releaseId]);
+  const schema = result.rows[0]?.schema;
+  return schema && typeof schema === 'object' && !Array.isArray(schema) ? schema as Record<string, unknown> : undefined;
 }
 
 export type SavedView = { id: string; name: string; datasetReleaseId: string; filters: Record<string, unknown>; createdAt: string };

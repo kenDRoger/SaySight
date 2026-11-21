@@ -10,6 +10,9 @@ import { Pool } from 'pg';
 const apiDir = fileURLToPath(new URL('..', import.meta.url));
 const databaseUrl = 'postgres://saysight:saysight-dev-only@localhost:5432/saysight';
 const workerUrl = 'http://127.0.0.1:8080';
+process.env.DATABASE_URL ??= databaseUrl;
+const store = await import('tsx/esm/api').then(async ({ tsImport }) =>
+  tsImport<typeof import('../src/store.ts')>('../src/store.ts', import.meta.url));
 const maintainerEmail = `maintainer-${randomUUID()}@example.test`;
 const logPrefix = 'magic link for ';
 
@@ -1050,4 +1053,78 @@ test('a failed pin writes one failed connector check and no release', async (t) 
   assert.equal(response.status, 502, text);
   assert.deepEqual(JSON.parse(text) as unknown, { error: 'connector_fetch_failed', message });
   assert.equal(await failedCheckCount(message), before + 1);
+});
+
+// Two-way joins over pinned rows (MVP-E S1-S4, S13).
+
+type SchemaColumn = { name: string; type: 'integer' | 'number' | 'text' };
+
+async function pinnedFixture(label: string, columns: SchemaColumn[], rows: Array<Record<string, unknown>>): Promise<string> {
+  const releaseId = await store.insertPinnedRelease({
+    connectorId: `fixture-${label}`, datasetId: label, checksum: randomUUID(), licenceStatus: 'confirmed',
+    attribution: 'Fixture', name: `Join fixture ${label}`, sourceUrl: 'https://example.test',
+    metadata: { schema: { grain: 'year', columns: columns.map((column) => ({ ...column, confidence: 'high', reason: 'fixture' })) },
+      filename: `${label}.json`, format: 'json' },
+  });
+  if (rows.length) await store.saveReleaseRows(releaseId, 0, rows);
+  return releaseId;
+}
+
+const joinRun = (body: unknown) => api('/api/v1/join/run', { method: 'POST', body });
+
+test('a join with an unknown release returns 404 release_not_found', async (t) => {
+  if (!ready(t)) return;
+  const right = await pinnedFixture('unknown-left-right', [{ name: 'year', type: 'integer' }], [{ year: 2024 }]);
+  const response = await joinRun({ left_release_id: randomUUID(), right_release_id: right, left_key: 'year', right_key: 'year' });
+  assert.equal(response.status, 404);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'release_not_found' });
+});
+
+test('a pinned release with no stored rows returns 400 release_not_pinned', async (t) => {
+  if (!ready(t)) return;
+  const empty = await pinnedFixture('no-rows', [{ name: 'year', type: 'integer' }], []);
+  const right = await pinnedFixture('no-rows-right', [{ name: 'year', type: 'integer' }], [{ year: 2024 }]);
+  const response = await joinRun({ left_release_id: empty, right_release_id: right, left_key: 'year', right_key: 'year' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'release_not_pinned' });
+});
+
+test('a planner refusal returns its code and message with 400', async (t) => {
+  if (!ready(t)) return;
+  const left = await pinnedFixture('bad-types-left', [{ name: 'year', type: 'integer' }], [{ year: 2024 }]);
+  const right = await pinnedFixture('bad-types-right', [{ name: 'year', type: 'text' }], [{ year: '2024' }]);
+  const response = await joinRun({ left_release_id: left, right_release_id: right, left_key: 'year', right_key: 'year' });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await responseJson<{ error: string; message: string }>(response),
+    { error: 'incompatible_key_types', message: "Incompatible key types: left 'integer' and right 'text'." });
+});
+
+test('two pinned releases join into prefixed rows with diagnostics and a schema', async (t) => {
+  if (!ready(t)) return;
+  const left = await pinnedFixture('join-left',
+    [{ name: 'year', type: 'integer' }, { name: 'amount', type: 'number' }],
+    [{ year: 2024, amount: 10 }, { year: 2023, amount: 5 }, { amount: 7 }]);
+  const right = await pinnedFixture('join-right',
+    [{ name: 'year', type: 'integer' }, { name: 'amount', type: 'number' }, { name: 'region', type: 'text' }],
+    [{ year: 2024, amount: 99, region: 'NCR' }, { year: 2023, amount: 88, region: 'Region I' }]);
+  const response = await joinRun({ left_release_id: left, right_release_id: right, left_key: 'year', right_key: 'year' });
+  const text = await responseText(response);
+  assert.equal(response.status, 200, text);
+  const body = JSON.parse(text) as {
+    diagnostics: { matchedRows: number; unmatchedLeft: number; unmatchedRight: number; duplicateRightKeys: number };
+    rows: Array<Record<string, unknown>>;
+    truncated: boolean;
+    schema: Array<{ name: string }>;
+  };
+  assert.deepEqual(body.diagnostics, {
+    leftRows: 3, rightRows: 2, matchedRows: 2, unmatchedLeft: 1, unmatchedRight: 0,
+    duplicateLeftKeys: 0, duplicateRightKeys: 0, cardinality: 'one-to-one',
+  });
+  assert.deepEqual(body.rows, [
+    { year: 2024, amount: 10, 'right.amount': 99, 'right.region': 'NCR' },
+    { year: 2023, amount: 5, 'right.amount': 88, 'right.region': 'Region I' },
+  ]);
+  assert.equal(body.truncated, false);
+  assert.deepEqual(body.schema.map((column) => column.name),
+    ['year', 'amount', 'right.amount', 'right.region']);
 });

@@ -4,8 +4,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, countReleaseRows, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, getReleaseRowSchema, getReleaseRows, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveReleaseRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
 import { inferReleaseSchema, licenceStatus, pinSummary, releaseKey } from './pin.js';
+import { executeJoin, joinedSchema, limitJoinedRows } from './joinRun.js';
 import { connectors, getConnector } from './connectors.js';
 import { classifyCheck, computeDrift, sourceFingerprint, summarise, type ReleaseFingerprint } from './refresh.js';
 import { createExplainer } from './explain.js';
@@ -13,6 +14,7 @@ import { checkRemoval, validateCommentBody, validateRemovalReason } from './comm
 import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js';
 import { validateMetadata, type PublicationMetadata } from './metadata.js';
 import { joinLimitations, planJoin, type Relationship } from './join.js';
+import { planJoin as planTwoWayJoin, type Aggregation, type Column } from './joinPlan.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { validateClaim } from './claim.js';
 import { csvFilename, toCsv } from './export.js';
@@ -150,6 +152,53 @@ async function normalizeDraft(filename: string, data: Buffer, publicId: string):
   } while (offset < total);
   return offset;
 }
+
+const maxReleaseRows = 200_000;
+const releaseRowPageSize = 1000;
+const maxJoinedRows = 50_000;
+
+// The worker reparses the pinned bytes for each page; only bounded pages are
+// kept, and a truncated read is recorded on the release rather than hidden.
+async function normalizeReleaseRows(filename: string, data: Buffer): Promise<{
+  pages: Array<{ offset: number; rows: Array<Record<string, unknown>> }>; truncated: boolean;
+}> {
+  const pages: Array<{ offset: number; rows: Array<Record<string, unknown>> }> = [];
+  let offset = 0;
+  let total = 0;
+  do {
+    const response = await workerFetch(`${workerUrl}/normalize-import?filename=${encodeURIComponent(filename)}&offset=${offset}&limit=${releaseRowPageSize}`,
+      { method: 'POST', body: data as unknown as BodyInit });
+    if (!response.ok) throw new Error(workerMessage(await response.text()));
+    const page = (await response.json()) as { total_rows?: number; rows?: Array<Record<string, unknown>> };
+    total = Number(page.total_rows ?? 0);
+    const rows = Array.isArray(page.rows)
+      ? page.rows.filter((row): row is Record<string, unknown> => row !== null && typeof row === 'object' && !Array.isArray(row))
+      : [];
+    if (!rows.length) break;
+    const remaining = maxReleaseRows - offset;
+    if (remaining <= 0) break;
+    const kept = rows.slice(0, remaining);
+    pages.push({ offset, rows: kept });
+    offset += kept.length;
+    if (kept.length < rows.length) break;
+  } while (offset < total && offset < maxReleaseRows);
+  return { pages, truncated: total > maxReleaseRows || offset < total };
+}
+
+const columnTypes = ['integer', 'number', 'text', 'date', 'boolean'];
+const columnsFromSchema = (schema: Record<string, unknown> | undefined): Column[] => {
+  const raw = schema?.columns;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry): Column[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const candidate = entry as { name?: unknown; type?: unknown };
+    if (typeof candidate.name !== 'string') return [];
+    const type = columnTypes.includes(String(candidate.type)) ? candidate.type as Column['type'] : 'text';
+    return [{ name: candidate.name, type }];
+  });
+};
+const grainFromSchema = (schema: Record<string, unknown> | undefined): string =>
+  typeof schema?.grain === 'string' && schema.grain.trim() ? schema.grain : 'row';
 
 const uploads = createGate(maxConcurrentUploads);
 
@@ -512,15 +561,33 @@ const server = createServer((request, response) => {
         return;
       }
 
+      let normalized: Awaited<ReturnType<typeof normalizeReleaseRows>>;
+      try { normalized = await normalizeReleaseRows(pinned.filename, bytes); }
+      catch (error) {
+        json(response, 502, { error: 'release_rows_parse_failed', message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+
       try {
         const existing = await findPinnedRelease(connector.id, datasetId, checksum);
-        if (existing) { json(response, 200, { release_id: existing, already_pinned: true }); return; }
+        if (existing) {
+          // A release pinned before row storage existed has no queryable rows, and a
+          // silent no-op would leave it permanently unjoinable.
+          const rowCount = await countReleaseRows(existing);
+          if (rowCount > 0) { json(response, 200, { release_id: existing, already_pinned: true, rows: rowCount }); return; }
+          for (const page of normalized.pages) await saveReleaseRows(existing, page.offset, page.rows);
+          const stored = await countReleaseRows(existing);
+          json(response, 200, { release_id: existing, already_pinned: true, rows: stored, rows_backfilled: true });
+          return;
+        }
         const status = licenceStatus(pinned.licence);
         const releaseId = await insertPinnedRelease({
           connectorId: connector.id, datasetId, checksum, licenceStatus: status,
           licence: pinned.licence, attribution: pinned.attribution, name: pinned.name, sourceUrl: connector.baseUrl,
           metadata: { schema: inferReleaseSchema(pinned.bytes, pinned.format), description: pinned.description,
-            filename: pinned.filename, format: pinned.format, releaseKey: key },
+            filename: pinned.filename, format: pinned.format, releaseKey: key,
+            ...(normalized.truncated ? { rowsTruncated: true } : {}) },
+          rows: normalized.pages,
         });
         json(response, 201, { release_id: releaseId, already_pinned: false,
           summary: pinSummary(connector.id, datasetId, bytes.length, status) });
@@ -729,6 +796,62 @@ const server = createServer((request, response) => {
       const imported = await saveNormalizedCoverage(rows, catalog[0]);
       json(response, 200, { dataset_release_id: 'bettergov-gaa-coverage-2026-11-07', imported_rows: imported, status: 'validated' });
     }).catch((error) => { console.error(error); json(response, 503, { error: 'normalized_import_unavailable' }); });
+    return;
+  }
+
+  // Public, like /api/v1/join/analyze: it reads pinned snapshots, not accounts.
+  if (request.method === 'POST' && request.url === '/api/v1/join/run') {
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      let payload: unknown;
+      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) { json(response, 400, { error: 'invalid_join_request' }); return; }
+      const body = payload as Record<string, unknown>;
+      const field = (name: string) => typeof body[name] === 'string' && (body[name] as string).trim() ? body[name] as string : undefined;
+      const leftReleaseId = field('left_release_id');
+      const rightReleaseId = field('right_release_id');
+      const leftKey = field('left_key');
+      const rightKey = field('right_key');
+      if (!leftReleaseId || !rightReleaseId || !leftKey || !rightKey) { json(response, 400, { error: 'invalid_join_request' }); return; }
+
+      let aggregation: Aggregation | undefined;
+      if (body.aggregation !== undefined) {
+        const raw = body.aggregation;
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { json(response, 400, { error: 'invalid_join_request' }); return; }
+        const candidate = raw as Record<string, unknown>;
+        const functions: Aggregation['fn'][] = ['sum', 'count', 'mean', 'min', 'max'];
+        if (typeof candidate.column !== 'string' || typeof candidate.targetGrain !== 'string' || !functions.some((fn) => fn === candidate.fn)) {
+          json(response, 400, { error: 'invalid_join_request' }); return;
+        }
+        aggregation = { column: candidate.column, fn: candidate.fn as Aggregation['fn'], targetGrain: candidate.targetGrain };
+      }
+
+      const [leftExists, rightExists] = await Promise.all([datasetReleaseExists(leftReleaseId), datasetReleaseExists(rightReleaseId)]);
+      if (!leftExists || !rightExists) { json(response, 404, { error: 'release_not_found' }); return; }
+      const [leftCount, rightCount] = await Promise.all([countReleaseRows(leftReleaseId), countReleaseRows(rightReleaseId)]);
+      if (!leftCount || !rightCount) { json(response, 400, { error: 'release_not_pinned' }); return; }
+      const [leftRows, rightRows, leftSchema, rightSchema] = await Promise.all([
+        getReleaseRows(leftReleaseId), getReleaseRows(rightReleaseId),
+        getReleaseRowSchema(leftReleaseId), getReleaseRowSchema(rightReleaseId),
+      ]);
+      const planned = planTwoWayJoin({
+        left: { label: leftReleaseId, grain: grainFromSchema(leftSchema), columns: columnsFromSchema(leftSchema), rows: leftRows },
+        right: { label: rightReleaseId, grain: grainFromSchema(rightSchema), columns: columnsFromSchema(rightSchema), rows: rightRows },
+        leftKey, rightKey, aggregation,
+      });
+      if (!planned.ok) { json(response, 400, { error: planned.error, message: planned.message }); return; }
+
+      const { rows, diagnostics } = executeJoin(planned.plan, leftRows, rightRows);
+      const limited = limitJoinedRows(rows, maxJoinedRows);
+      if (limited.truncated) {
+        json(response, 413, { error: 'join_result_too_large', row_count: rows.length, row_limit: maxJoinedRows,
+          left_rows: leftRows.length, right_rows: rightRows.length });
+        return;
+      }
+      json(response, 200, { diagnostics, rows: limited.rows, truncated: limited.truncated,
+        schema: joinedSchema(columnsFromSchema(leftSchema), columnsFromSchema(rightSchema), planned.plan.rightKey) });
+    }).catch(() => json(response, 503, { error: 'join_run_unavailable' }));
     return;
   }
 

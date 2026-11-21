@@ -44,7 +44,8 @@ a:hover { text-decoration-thickness: 2px; }
   align-items: center;
   gap: .6rem 1.25rem;
   box-sizing: border-box;
-  max-width: 72rem;
+  /* Same measure as main and the footer, so the wordmark and the h1 share a left edge. */
+  max-width: 60rem;
   margin: 0 auto;
   padding: 1rem 1.25rem .5rem;
   border-bottom: 1px solid var(--line);
@@ -150,6 +151,10 @@ th, td { text-align: left; vertical-align: top; padding: .45rem .5rem; border-bo
 .session form { max-width: 22rem; }
 .queue-list, .comment-list { display: grid; gap: 1rem; margin: 1rem 0; padding-left: 1.25rem; }
 .queue-list li, .comment-list li { overflow-wrap: anywhere; }
+.queue-claim { margin: 0 0 .35rem; font-weight: 650; overflow-wrap: anywhere; }
+.queue-meta { margin: 0 0 .6rem; font-size: .85rem; color: var(--muted); }
+.decision { margin-top: .75rem; }
+.decision summary { font-weight: 650; }
 .review-form, .removal-form { margin-top: .75rem; }
 .release-list, .view-list { display: grid; gap: 1rem; margin: 1rem 0; padding-left: 1.25rem; }
 .release-list li, .view-list li { overflow-wrap: anywhere; }

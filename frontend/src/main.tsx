@@ -1033,21 +1033,24 @@ function App() {
         <div className="form-field"><Label htmlFor="queue-limit">Findings per page</Label><select id="queue-limit" value={queueLimit} onChange={(event) => setQueueLimit(event.target.value)}><option value="">Default</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
         <div className="form-field"><Label htmlFor="queue-offset">Queue offset</Label><Input id="queue-offset" type="number" min="0" inputMode="numeric" placeholder="0" value={queueOffset} onChange={(event) => setQueueOffset(event.target.value)} /></div>
       </div>
-      <p role="status" className="muted">{queueReady ? `${queue.length} finding${queue.length === 1 ? '' : 's'} shown${queueLimit ? ` · limit ${queueLimit}` : ' · unpaginated'}${queueOffset ? ` · offset ${queueOffset}` : ''}` : 'Loading review queue…'}</p>
+      <p role="status" className="muted">{queueReady ? `${queue.length} finding${queue.length === 1 ? '' : 's'} showing${queueLimit ? ` · ${queueLimit} per page` : ''}${queueOffset && queueOffset !== '0' ? ` · from ${queueOffset}` : ''}` : 'Loading review queue…'}</p>
       {queueError && <p role="alert" className="error">{queueError}</p>}
       {reviewStatus && <p role="status" className="muted">{reviewStatus}</p>}
       {!queueReady ? null : queue.length === 0 ? <p>No findings are waiting for review.</p> : <ul className="queue-list">{queue.map((item) => {
         const draft = decisionDrafts[item.id] ?? { status: '', reason: '' };
         const allowed = nextStatuses[item.status] ?? [];
         return <li key={item.id}>
-          <h3>Finding <code>{item.id}</code></h3>
-          <p>Status: <strong>{item.status}</strong> · Impact: <strong>{item.impact}</strong></p>
-          <Button type="button" variant="outline" size="md" onClick={() => loadFinding(item.id)}>View finding</Button>
-          {allowed.length > 0 ? <form className="review-form" onSubmit={(event) => decide(event, item)}>
+          {/* A reviewer decides from this line, so the claim leads and the id is reference. */}
+          <p className="queue-claim">{item.claim || 'No claim was recorded for this finding.'}</p>
+          <p className="queue-meta"><span className={`pill pill-${statusSlug(item.status)}`}>{item.status}</span> · {item.impact} impact · <code>{item.id}</code></p>
+          <Button type="button" variant="outline" size="md" onClick={() => loadFinding(item.id)}>View finding and evidence</Button>
+          {allowed.length > 0 ? <details className="decision"><summary>Record a decision</summary>
+          <form className="review-form" onSubmit={(event) => decide(event, item)}>
             <div className="form-field"><Label htmlFor={`decision-status-${item.id}`}>Decision status</Label><select id={`decision-status-${item.id}`} required value={draft.status} onChange={(event) => setDecisionDrafts((current) => ({ ...current, [item.id]: { ...draft, status: event.target.value } }))}><option value="">Choose a status</option>{allowed.map((value) => <option key={value} value={value}>{value}</option>)}</select></div>
             <div className="form-field"><Label htmlFor={`decision-reason-${item.id}`}>Reason for this decision</Label><textarea id={`decision-reason-${item.id}`} required maxLength={2000} value={draft.reason} onChange={(event) => setDecisionDrafts((current) => ({ ...current, [item.id]: { ...draft, reason: event.target.value } }))} /></div>
             <Button type="submit" variant="primary" size="md">Submit decision</Button>
-          </form> : <p className="muted">No further decision is available.</p>}
+          </form>
+          </details> : <p className="muted">No further decision is available.</p>}
         </li>;
       })}</ul>}
       </Card>

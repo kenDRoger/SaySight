@@ -70,6 +70,9 @@ type WorkerAnalysisResponse = {
 const maxConcurrentUploads = 2;
 // A public list must stay one bounded response, so the cap is the contract.
 const publicFindingLimit = 100;
+// Record ids are UUIDs. A malformed one cannot exist, so it is a 404 — passing it to
+// Postgres would raise a cast error and be reported as a store outage.
+const recordId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function uploadBusy(response: ServerResponse) {
   response.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '1' });
@@ -1155,6 +1158,7 @@ const server = createServer((request, response) => {
 
   const findingMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)$/) : undefined;
   if (findingMatch) {
+    if (!recordId.test(findingMatch[1])) { json(response, 404, { error: 'finding_not_found' }); return; }
     getFinding(findingMatch[1]).then((finding) => finding ? json(response, 200, finding) : json(response, 404, { error: 'finding_not_found' })).catch(() => json(response, 503, { error: 'finding_store_unavailable' }));
     return;
   }
@@ -1176,6 +1180,7 @@ const server = createServer((request, response) => {
 
   const evidenceMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/evidence\/([^/]+)$/) : undefined;
   if (evidenceMatch) {
+    if (!recordId.test(evidenceMatch[1])) { json(response, 404, { error: 'evidence_not_found' }); return; }
     getEvidence(evidenceMatch[1]).then((evidence) => evidence ? json(response, 200, evidence) : json(response, 404, { error: 'evidence_not_found' })).catch(() => json(response, 503, { error: 'evidence_store_unavailable' }));
     return;
   }

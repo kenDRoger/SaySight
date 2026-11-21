@@ -1247,3 +1247,13 @@ test('the public finding page states the real status, not a fixed Unverified', a
   assert.doesNotMatch(after, /has not been human-reviewed/);
   assert.match(after, /A reviewer recorded <strong>Rejected<\/strong>/);
 });
+
+test('a malformed record id is not found, not a store outage', async (t) => {
+  if (!ready(t)) return;
+  const finding = await api('/api/v1/findings/not-a-uuid');
+  assert.equal(finding.status, 404);
+  assert.equal((await responseJson<{ error: string }>(finding)).error, 'finding_not_found');
+  const evidence = await api('/api/v1/evidence/not-a-uuid');
+  assert.equal(evidence.status, 404);
+  assert.equal((await responseJson<{ error: string }>(evidence)).error, 'evidence_not_found');
+});

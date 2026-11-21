@@ -90,12 +90,19 @@ try {
   const rankLabel = await rank.locator('[tabindex="0"][aria-label*="FY"]').first().getAttribute('aria-label');
   assert.ok(/FY\d{4}/.test(rankLabel ?? '') && /₱|PHP/.test(rankLabel ?? ''), `rank point label: ${rankLabel}`);
   console.log(`OK rank chart renders ${rankPoints} focusable labelled bars`);
+  const rankTable = rank.locator('table');
+  await rank.locator('summary', { hasText: 'Table of values' }).first().click();
+  assert.ok(await rankTable.count() === 1, 'rank chart has no values table');
+  assert.ok((await rankTable.textContent())?.includes('6,793,162,000,000'), 'rank table lacks the exact top amount');
+  console.log('OK rank chart ships a values table with exact amounts');
 
   const trend = await runRecipe('change_over_time');
   const trendLabel = await trend.locator('[tabindex="0"][aria-label*="FY"]').first().getAttribute('aria-label');
   assert.ok(/FY\d{4}/.test(trendLabel ?? ''), `trend point label: ${trendLabel}`);
   const trendText = await trend.textContent();
   assert.ok(!/FY2022\s*·?\s*₱0/.test(trendText ?? ''), 'a gap year was drawn as zero');
+  await trend.locator('summary', { hasText: 'Table of values' }).first().click();
+  assert.ok((await trend.locator('table').textContent())?.includes('No GAA'), 'trend table does not mark gap years');
   console.log('OK trend chart exposes labelled points and does not zero the gap years');
 
   const distribution = await runRecipe('distribution');

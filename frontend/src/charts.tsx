@@ -52,6 +52,22 @@ export const isCompareResult = (value: unknown): value is CompareResult => isRec
 
 const pesoTooltip = (value: unknown) => typeof value === 'number' ? pesoText(value) : 'No GAA — no amount reported';
 
+// Every chart ships a values table behind a disclosure: charts aid comprehension,
+// the table carries the exact figures for screen readers, keyboards, and print.
+function ValuesTable({ caption, head, rows }: { caption: string; head: string[]; rows: Array<Array<string | number>> }) {
+  return <details className="chart-table"><summary>Table of values</summary>
+    <div className="table-scroll" role="region" aria-label={caption} tabIndex={0}>
+      <table>
+        <caption>{caption}</caption>
+        <thead><tr>{head.map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
+        <tbody>{rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => cellIndex === 0
+          ? <th key={cellIndex} scope="row">{cell}</th>
+          : <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody>
+      </table>
+    </div>
+  </details>;
+}
+
 export function RankChart({ rows }: { rows: RankRow[] }) {
   const summary = `Horizontal bar chart ranking reported GAA appropriations in pesos for ${rows.length} fiscal years, highest first.`;
   return <figure className="chart-figure chart-figure--rank">
@@ -73,6 +89,9 @@ export function RankChart({ rows }: { rows: RankRow[] }) {
     <figcaption><strong>Reported GAA appropriations by fiscal year, ranked highest first.</strong> Each bar encodes a year's amount in pesos; the axis uses compact currency values and exact amounts appear in tooltips and the raw JSON.<br />
       <span className="chart-note">Limitation: amounts are nominal and coverage scopes vary by year, so this ranking is not inflation- or scope-adjusted.</span>
     </figcaption>
+    <ValuesTable caption="Ranked fiscal years and appropriations"
+      head={['Rank', 'Fiscal year', 'Amount (PHP)', 'Coverage status']}
+      rows={rows.map((row, index) => [index + 1, `FY${row.year}`, row.amount_pesos === null ? 'No amount recorded' : row.amount_pesos.toLocaleString('en-PH'), row.status])} />
   </figure>;
 }
 
@@ -102,6 +121,12 @@ export function TrendChart({ rows }: { rows: TrendRow[] }) {
     <figcaption><strong>Reported GAA appropriations over fiscal years.</strong> The line encodes each year's amount in pesos; {gaps.length ? `gaps at ${gaps.join(', ')} mark years with no GAA` : 'this selection has no gap years'}.<br />
       <span className="chart-note">Limitation: missing years are left as gaps — no value is invented — and year-to-year scope differences limit comparison.</span>
     </figcaption>
+    <ValuesTable caption="Appropriations and year-over-year change by fiscal year"
+      head={['Fiscal year', 'Amount (PHP)', 'Change from previous', 'Coverage status']}
+      rows={rows.map((row) => [`FY${row.year}`,
+        row.amount_pesos === null ? 'No GAA — no value recorded' : row.amount_pesos.toLocaleString('en-PH'),
+        row.change_from_previous_pesos === null || row.change_from_previous_pesos === undefined ? '—' : row.change_from_previous_pesos.toLocaleString('en-PH'),
+        row.status])} />
   </figure>;
 }
 
@@ -134,6 +159,9 @@ export function DistributionChart({ result }: { result: DistributionResult }) {
     <figcaption><strong>Coverage rows by status.</strong> Each bar encodes the row count; percentages are in each bar's accessible label and tooltip.<br />
       <span className="chart-note">Limitation: these are counts of coverage rows, not independent fiscal years or amounts.</span>
     </figcaption>
+    <ValuesTable caption="Coverage rows by status"
+      head={['Coverage status', 'Rows', 'Percentage']}
+      rows={result.groups.map((group) => [statusName(group.value), group.count, percentText(group.percentage)])} />
   </figure>;
 }
 
@@ -163,5 +191,11 @@ export function CompareChart({ result }: { result: CompareResult }) {
     <figcaption><strong>FY{result.year_a} versus FY{result.year_b}.</strong> The two bars encode reported amounts; FY{result.year_b} minus FY{result.year_a} is {differenceText}, a change of {percentText(result.percent_change)}.<br />
       <span className="chart-note">Limitation: the comparison is valid only because both years share a coverage status and scope; it does not measure spending.</span>
     </figcaption>
+    <ValuesTable caption={`Comparison of FY${result.year_a} and FY${result.year_b}`}
+      head={['Measure', 'Value']}
+      rows={[[`FY${result.year_a}`, result.value_a_pesos === null ? 'No amount recorded' : result.value_a_pesos.toLocaleString('en-PH')],
+        [`FY${result.year_b}`, result.value_b_pesos === null ? 'No amount recorded' : result.value_b_pesos.toLocaleString('en-PH')],
+        ['Difference', result.difference_pesos === null ? 'Not comparable' : result.difference_pesos.toLocaleString('en-PH')],
+        ['Percent change', percentText(result.percent_change)]]} />
   </figure>;
 }

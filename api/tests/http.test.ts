@@ -777,6 +777,70 @@ test('invalid pagination parameters are refused', async (t) => {
   }
 });
 
+// Catalog and queue search and filter (gap 9).
+
+test('the catalog filters by query, agency, and freshness and keeps the default response', async (t) => {
+  if (!ready(t)) return;
+  type CatalogDataset = { id: string; name: string; publisher: string; releaseId: string; agencyId: string | null; freshnessStatus: string };
+  const defaultText = await responseText(await api('/api/v1/datasets'));
+  const all = JSON.parse(defaultText) as { datasets: CatalogDataset[] };
+  assert.ok(all.datasets.length > 0);
+  // Empty filter parameters mean "no filter", so the body is byte-identical.
+  assert.equal(await responseText(await api('/api/v1/datasets?q=&agency=&freshness=')), defaultText);
+  const ids = new Set(all.datasets.map((dataset) => dataset.id));
+  const verifiedId = 'bettergov-gaa-coverage-2026-11-07';
+
+  const matched = await responseJson<{ datasets: CatalogDataset[] }>(await api('/api/v1/datasets?q=APPROPRIATIONS'));
+  assert.ok(matched.datasets.some((dataset) => dataset.id === verifiedId));
+  for (const dataset of matched.datasets) {
+    assert.ok(ids.has(dataset.id), `filter invented a release: ${dataset.id}`);
+    assert.ok([dataset.name, dataset.publisher, dataset.releaseId, dataset.agencyId ?? ''].some((field) => field.toLowerCase().includes('appropriations')), `matched on nothing: ${dataset.id}`);
+  }
+  const lower = await responseJson<{ datasets: CatalogDataset[] }>(await api('/api/v1/datasets?q=appropriations'));
+  assert.deepEqual(lower.datasets.map((dataset) => dataset.id), matched.datasets.map((dataset) => dataset.id));
+
+  const byAgency = await responseJson<{ datasets: CatalogDataset[] }>(await api('/api/v1/datasets?agency=bettergov'));
+  assert.ok(byAgency.datasets.some((dataset) => dataset.id === verifiedId));
+  assert.ok(byAgency.datasets.every((dataset) => dataset.agencyId === 'bettergov'));
+  assert.deepEqual((await responseJson<{ datasets: CatalogDataset[] }>(await api('/api/v1/datasets?agency=no-such-agency'))).datasets, []);
+
+  const current = await responseJson<{ datasets: CatalogDataset[] }>(await api('/api/v1/datasets?freshness=current'));
+  assert.ok(current.datasets.some((dataset) => dataset.id === verifiedId));
+  assert.ok(current.datasets.every((dataset) => dataset.freshnessStatus === 'current'));
+
+  for (const query of ['freshness=bogus', 'q=appropriations&freshness=unknown']) {
+    const response = await api(`/api/v1/datasets?${query}`);
+    assert.equal(response.status, 400, query);
+    assert.deepEqual(await responseJson<unknown>(response), { error: 'invalid_filter', parameter: 'freshness' });
+  }
+});
+
+test('the review queue filters by status, impact, and claim', async (t) => {
+  if (!ready(t, true)) return;
+  const author = await signIn('queue-filter-author');
+  const finding = await submitFinding(author.cookie);
+  const reviewAccount = await reviewer();
+  await moveTo(finding.id, reviewAccount.cookie, 'Pending verification');
+
+  const defaultText = await responseText(await api('/api/v1/review/queue', { cookie: reviewAccount.cookie }));
+  assert.equal(await responseText(await api('/api/v1/review/queue?status=&impact=&q=', { cookie: reviewAccount.cookie })), defaultText);
+
+  const byStatus = await responseJson<{ findings: Finding[] }>(await api('/api/v1/review/queue?status=In%20review', { cookie: reviewAccount.cookie }));
+  assert.ok(byStatus.findings.every((item) => item.status === 'In review'));
+  const byImpact = await responseJson<{ findings: Finding[] }>(await api('/api/v1/review/queue?impact=low', { cookie: reviewAccount.cookie }));
+  assert.ok(byImpact.findings.some((item) => item.id === finding.id), 'the single-year finding is low impact');
+  assert.ok(byImpact.findings.every((item) => item.impact === 'low'));
+  const byClaim = await responseJson<{ findings: Finding[] }>(await api('/api/v1/review/queue?q=FY2024%20APPROPRIATIONS', { cookie: reviewAccount.cookie }));
+  assert.ok(byClaim.findings.some((item) => item.id === finding.id));
+  assert.ok(byClaim.findings.every((item) => (item.claim ?? '').toLowerCase().includes('fy2024 appropriations')));
+
+  for (const [query, parameter] of [['status=Reviewed', 'status'], ['impact=critical', 'impact']] as const) {
+    const response = await api(`/api/v1/review/queue?${query}`, { cookie: reviewAccount.cookie });
+    assert.equal(response.status, 400, query);
+    assert.deepEqual(await responseJson<unknown>(response), { error: 'invalid_filter', parameter });
+  }
+});
+
 test('the public catalog excludes private drafts and always has complete arrays', async (t) => {
   if (!ready(t)) return;
   const { datasets } = await responseJson<{ datasets: Array<{ id: string; coverage?: { fiscalYears?: unknown }; fields?: unknown; limitations?: unknown }> }>(await api('/api/v1/datasets'));

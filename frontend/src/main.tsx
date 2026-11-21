@@ -62,9 +62,10 @@ const failureMessage = (reason: unknown, fallback: string) => reason instanceof 
 const failureStatus = (reason: unknown) => reason instanceof Error && 'status' in reason ? Number((reason as ApiFailure).status) : 0;
 
 // Pagination is opt-in: an untouched control sends no query parameter, so the
-// API default response shape is preserved.
-const pageQuery = (limit: string, offset: string) => {
+// API default response shape is preserved. Filters follow the same rule.
+const pageQuery = (limit: string, offset: string, filters: Record<string, string> = {}) => {
   const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
   if (limit) params.set('limit', limit);
   if (offset) params.set('offset', offset);
   return params.toString() ? `?${params}` : '';
@@ -131,6 +132,10 @@ function App() {
   const [removalReasons, setRemovalReasons] = useState<Record<string, string>>({});
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [releases, setReleases] = useState<Dataset[]>([]);
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const [catalogAgency, setCatalogAgency] = useState('');
+  const [catalogFreshness, setCatalogFreshness] = useState('');
+  const [catalogError, setCatalogError] = useState('');
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [viewName, setViewName] = useState('');
   const [viewsStatus, setViewsStatus] = useState('');
@@ -139,6 +144,9 @@ function App() {
   const [viewsOffset, setViewsOffset] = useState('');
   const [queueLimit, setQueueLimit] = useState('');
   const [queueOffset, setQueueOffset] = useState('');
+  const [queueFilterStatus, setQueueFilterStatus] = useState('');
+  const [queueFilterImpact, setQueueFilterImpact] = useState('');
+  const [queueFilterQuery, setQueueFilterQuery] = useState('');
   const [uploadFile, setUploadFile] = useState<File>();
   const [uploadName, setUploadName] = useState('');
   const [uploadDraft, setUploadDraft] = useState<ImportDraft>();
@@ -151,16 +159,27 @@ function App() {
   const reviewer = isReviewer(user?.role);
   const maintainer = user?.role === 'maintainer';
   const agencyName = (id: string | null | undefined) => agencies.find((item) => item.id === id)?.name ?? id ?? 'Unlisted agency';
+  // Queue filters ride along with pagination; untouched controls add no parameter.
+  const queueQuery = () => pageQuery(queueLimit, queueOffset, { status: queueFilterStatus, impact: queueFilterImpact, q: queueFilterQuery.trim() });
 
   useEffect(() => {
-    fetch(`${apiBase}/api/v1/datasets`).then((response) => response.json()).then((body: { datasets?: Dataset[] }) => {
-      const list = body.datasets ?? [];
+    const params = new URLSearchParams();
+    if (catalogQuery.trim()) params.set('q', catalogQuery.trim());
+    if (catalogAgency) params.set('agency', catalogAgency);
+    if (catalogFreshness) params.set('freshness', catalogFreshness);
+    const query = params.toString() ? `?${params}` : '';
+    // shortcut: one request per keystroke; debounce when the catalog outgrows a page.
+    fetch(`${apiBase}/api/v1/datasets${query}`).then(async (response) => {
+      const body = await response.json() as { datasets?: Dataset[]; error?: string; parameter?: string };
+      if (!response.ok) throw new Error(body.error === 'invalid_filter' ? `The ${body.parameter ?? 'filter'} filter is not valid.` : 'The catalog is currently unavailable.');
+      return body.datasets ?? [];
+    }).then((list) => {
       setReleases(list);
-      // The catalog is alphabetical, which would put a test fixture first. Feature the
-      // verified release when it is present and keep the full list below it.
-      setDataset(list.find((item: Dataset) => item.publisher === 'BetterGovPH') ?? list[0]);
-    }).catch(() => setError('The catalog is currently unavailable.'));
-  }, []);
+      setCatalogError('');
+      // The featured release stays the verified one; filtering only narrows the list.
+      if (!query) setDataset(list.find((item: Dataset) => item.publisher === 'BetterGovPH') ?? list[0]);
+    }).catch((reason: unknown) => { setReleases([]); setCatalogError(failureMessage(reason, 'The catalog is currently unavailable.')); });
+  }, [catalogQuery, catalogAgency, catalogFreshness]);
 
   useEffect(() => {
     fetch(`${apiBase}/api/v1/agencies`).then((response) => { if (!response.ok) throw new Error('Agencies unavailable'); return response.json(); }).then((body: { agencies?: Agency[] }) => setAgencies(body.agencies ?? [])).catch(() => setAgencies([]));
@@ -186,12 +205,12 @@ function App() {
     if (!reviewer) return;
     let active = true;
     setQueueReady(false); setQueueError('');
-    apiRequest<{ findings: Finding[] }>(`/api/v1/review/queue${pageQuery(queueLimit, queueOffset)}`)
+    apiRequest<{ findings: Finding[] }>(`/api/v1/review/queue${queueQuery()}`)
       .then((body) => { if (active) setQueue(body.findings); })
       .catch((reason: unknown) => { if (active) setQueueError(failureMessage(reason, 'Review queue unavailable.')); })
       .finally(() => { if (active) setQueueReady(true); });
     return () => { active = false; };
-  }, [reviewer, queueLimit, queueOffset]);
+  }, [reviewer, queueLimit, queueOffset, queueFilterStatus, queueFilterImpact, queueFilterQuery]);
 
   useEffect(() => {
     if (!user) { setSavedViews([]); setViewsStatus(''); return; }
@@ -266,7 +285,7 @@ function App() {
       setReviewStatus(result.conflict ? `Reviewers disagreed (${result.conflict.statuses.join(' vs ')}); both positions are recorded.` : 'Decision recorded.');
       await loadFinding(item.id);
       try {
-        const refreshed = await apiRequest<{ findings: Finding[] }>(`/api/v1/review/queue${pageQuery(queueLimit, queueOffset)}`);
+        const refreshed = await apiRequest<{ findings: Finding[] }>(`/api/v1/review/queue${queueQuery()}`);
         setQueue(refreshed.findings);
       } catch (cause) { setQueueError(failureMessage(cause, 'Review queue unavailable.')); }
     } catch (reason) {
@@ -422,6 +441,12 @@ function App() {
       <Card className="card">
       <h2 id="dataset-heading">Dataset catalog</h2>
       <p className="muted">One verified release is the working dataset. Other entries are published releases and test fixtures; each lists its agency, region, and freshness so you can judge it before using it.</p>
+      <div className="filter-row">
+        <div className="form-field"><Label htmlFor="catalog-query">Search releases</Label><Input id="catalog-query" type="search" value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} placeholder="Name, publisher, release, or agency" /></div>
+        <div className="form-field"><Label htmlFor="catalog-agency">Agency</Label><select id="catalog-agency" value={catalogAgency} onChange={(event) => setCatalogAgency(event.target.value)}><option value="">All agencies</option>{agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}</select></div>
+        <div className="form-field"><Label htmlFor="catalog-freshness">Freshness</Label><select id="catalog-freshness" value={catalogFreshness} onChange={(event) => setCatalogFreshness(event.target.value)}><option value="">All freshness</option><option value="current">Current</option><option value="possibly_stale">Possibly stale</option><option value="stale">Stale</option></select></div>
+      </div>
+      {catalogError && <p role="alert" className="error">{catalogError}</p>}
       {dataset ? <>
         <h3>{dataset.name}</h3>
         <p>Publisher: {dataset.publisher} · Terms: {dataset.reuseTerms}</p>
@@ -551,6 +576,11 @@ function App() {
     {reviewer && <section aria-labelledby="queue-heading">
       <Card className="card">
       <h2 id="queue-heading">Review queue</h2>
+      <div className="filter-row">
+        <div className="form-field"><Label htmlFor="queue-filter-status">Status</Label><select id="queue-filter-status" value={queueFilterStatus} onChange={(event) => setQueueFilterStatus(event.target.value)}><option value="">All statuses</option><option value="Pending verification">Pending verification</option><option value="In review">In review</option></select></div>
+        <div className="form-field"><Label htmlFor="queue-filter-impact">Impact</Label><select id="queue-filter-impact" value={queueFilterImpact} onChange={(event) => setQueueFilterImpact(event.target.value)}><option value="">All impacts</option><option value="low">Low</option><option value="standard">Standard</option><option value="high">High</option></select></div>
+        <div className="form-field"><Label htmlFor="queue-filter-query">Search claims</Label><Input id="queue-filter-query" type="search" value={queueFilterQuery} onChange={(event) => setQueueFilterQuery(event.target.value)} placeholder="Text in the claim" /></div>
+      </div>
       <div className="pagination">
         <div className="form-field"><Label htmlFor="queue-limit">Findings per page</Label><select id="queue-limit" value={queueLimit} onChange={(event) => setQueueLimit(event.target.value)}><option value="">Default</option><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></div>
         <div className="form-field"><Label htmlFor="queue-offset">Queue offset</Label><Input id="queue-offset" type="number" min="0" inputMode="numeric" placeholder="0" value={queueOffset} onChange={(event) => setQueueOffset(event.target.value)} /></div>

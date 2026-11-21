@@ -32,7 +32,9 @@ code { overflow-wrap: anywhere; }
 .release-list, .view-list { display: grid; gap: 1rem; margin: 1rem 0; padding-left: 1.25rem; }
 .release-list li, .view-list li { overflow-wrap: anywhere; }
 .pagination { display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; margin-top: 1rem; }
-.pagination .form-field { min-width: 10rem; max-width: 14rem; }
+/* Catalog and queue filters: wrap into columns instead of overflowing at 375px. */
+.filter-row { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); margin: 1rem 0; }
+.filter-row .form-field { min-width: 0; }.pagination .form-field { min-width: 10rem; max-width: 14rem; }
 .pagination + p { margin-top: .5rem; }
 .import-result { margin-top: 1rem; overflow-wrap: anywhere; }
 .join-result { margin-top: 1rem; overflow-wrap: anywhere; }

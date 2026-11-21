@@ -11,6 +11,7 @@ import { validateMetadata, type PublicationMetadata } from './metadata.js';
 import { joinLimitations, planJoin, type Relationship } from './join.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
 import { validateClaim } from './claim.js';
+import { filterDatasets, filterQueue, isInvalidFilter } from './filters.js';
 import { checkImpactGate, conflictRecord, deriveImpact, isImpact, type Impact } from './impact.js';
 import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
 import { createPgAuthStore } from './authpg.js';
@@ -44,7 +45,8 @@ type WorkerAnalysisResponse = {
 
 // Public endpoint contract for every route in this file: success is 200, 201,
 // 202, or 204; failures use a JSON { error: '<code>' } body with 400 for bad
-// input, 401 sign_in_required / invalid_or_expired_link, 403 for denied roles,
+// input (400 invalid_filter adds the offending `parameter`),
+// 401 sign_in_required / invalid_or_expired_link, 403 for denied roles,
 // 404 for missing records, 409 for state conflicts, 413 for capped bodies, 422
 // for rejected imports, 429 upload_busy, and 503 for unavailable dependencies.
 // The findings/:id/page route is HTML and returns 404 or 503 as plain text.
@@ -150,7 +152,15 @@ const server = createServer((request, response) => {
   if (datasetsMatch) {
     const page = paginationFor(request.url);
     if ('error' in page) { json(response, 400, { error: 'invalid_pagination' }); return; }
-    getCatalogReleases().then((releases) => json(response, 200, { datasets: paginate(releases?.length ? releases : catalog, page) })).catch(() => json(response, 503, { error: 'catalog_unavailable' }));
+    // Filters narrow the list before pagination, so a page holds the matches the
+    // caller asked for. With no parameters the list is exactly what it was.
+    const params = new URL(request.url ?? '/', 'http://localhost').searchParams;
+    const filters = { q: params.get('q'), agency: params.get('agency'), freshness: params.get('freshness') };
+    getCatalogReleases().then((releases) => {
+      const filtered = filterDatasets(releases?.length ? releases : catalog, filters);
+      if (isInvalidFilter(filtered)) { json(response, 400, filtered); return; }
+      json(response, 200, { datasets: paginate(filtered, page) });
+    }).catch(() => json(response, 503, { error: 'catalog_unavailable' }));
     return;
   }
 
@@ -215,12 +225,16 @@ const server = createServer((request, response) => {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
     const page = paginationFor(request.url);
     if ('error' in page) { json(response, 400, { error: 'invalid_pagination' }); return; }
+    const params = new URL(request.url ?? '/', 'http://localhost').searchParams;
+    const filters = { status: params.get('status'), impact: params.get('impact'), q: params.get('q') };
     auth.session(requestSessionToken(request)).then(async (user) => {
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       if (user.role !== 'reviewer' && user.role !== 'maintainer') { json(response, 403, { error: 'reviewer_required' }); return; }
       // A reviewer's own submissions are excluded rather than shown and refused.
       const queue = await listReviewQueue([...reviewQueueStatuses]);
-      json(response, 200, { findings: paginate(queue.filter((finding) => finding.submittedBy !== user.id), page) });
+      const filtered = filterQueue(queue.filter((finding) => finding.submittedBy !== user.id), filters);
+      if (isInvalidFilter(filtered)) { json(response, 400, filtered); return; }
+      json(response, 200, { findings: paginate(filtered, page) });
     }).catch(() => json(response, 503, { error: 'review_queue_unavailable' }));
     return;
   }

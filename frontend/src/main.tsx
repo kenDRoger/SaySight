@@ -25,6 +25,7 @@ type Dataset = {
   licenceStatus?: string;
   attribution?: string;
   metadata?: { schema?: { columns?: SchemaColumn[] } };
+  rowCount?: number;
 };
 
 type SchemaColumn = { name: string; type?: string };
@@ -279,7 +280,7 @@ function App() {
   const [viewsError, setViewsError] = useState('');
   const [viewsLimit, setViewsLimit] = useState('');
   const [viewsOffset, setViewsOffset] = useState('');
-  const [queueLimit, setQueueLimit] = useState('');
+  const [queueLimit, setQueueLimit] = useState('25');
   const [queueOffset, setQueueOffset] = useState('');
   const [queueFilterStatus, setQueueFilterStatus] = useState('');
   const [queueFilterImpact, setQueueFilterImpact] = useState('');
@@ -317,9 +318,10 @@ function App() {
   const visibleDatasets = datasets
     .filter((release) => datasetMatches(release) || selectedIds.includes(pickId(release)))
     .sort((left, right) => {
-      const rank = (release: Dataset) => (isTestFixture(release) ? 1 : 0);
-      const featured = (release: Dataset) => (release.publisher === 'BetterGovPH' ? 0 : 1);
-      return rank(left) - rank(right) || featured(left) - featured(right) || left.name.localeCompare(right.name);
+      // A release with no stored rows cannot run, so it must not occupy the first page.
+      const usable = (release: Dataset) => ((release.rowCount ?? 0) > 0 ? 0 : 1);
+      const testData = (release: Dataset) => (isTestFixture(release) ? 1 : 0);
+      return usable(left) - usable(right) || testData(left) - testData(right) || left.name.localeCompare(right.name);
     });
   const shownDatasets = showAllDatasets ? visibleDatasets : visibleDatasets.slice(0, 15);
   const selectedReleases = selectedIds.map((id) => datasets.find((item) => pickId(item) === id)).filter((item): item is Dataset => item !== undefined);
@@ -871,12 +873,13 @@ function App() {
         {shownDatasets.map((release) => {
           const id = pickId(release);
           const checked = selectedIds.includes(id);
+          const runnable = (release.rowCount ?? 0) > 0;
           return <li key={id}>
             <div className="dataset-pick">
-              <input id={`pick-${id}`} type="checkbox" checked={checked} disabled={!checked && selectedIds.length >= 2} onChange={() => toggleDataset(id)} />
+              <input id={`pick-${id}`} type="checkbox" checked={checked} disabled={!runnable || (!checked && selectedIds.length >= 2)} aria-describedby={`pick-note-${id}`} onChange={() => toggleDataset(id)} />
               <Label htmlFor={`pick-${id}`}>{release.name}</Label>
             </div>
-            <p className="muted">Agency: {agencyName(release.agencyId)} · Region: {release.region || '—'} · Freshness: <strong>{release.freshnessStatus || 'unknown'}</strong> · {licenceLabel(release)}</p>
+            <p className="muted" id={`pick-note-${id}`}>Agency: {agencyName(release.agencyId)} · Region: {release.region || '—'} · Freshness: <strong>{release.freshnessStatus || 'unknown'}</strong> · {licenceLabel(release)} · {runnable ? `${(release.rowCount ?? 0).toLocaleString()} stored rows` : 'no stored rows, so insights cannot run on it'}</p>
           </li>;
         })}
       </ul>

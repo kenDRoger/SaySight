@@ -142,7 +142,8 @@ export type NormalizedCoverage = { year: number; status: string; rows: number; a
 export async function getCatalogReleases(): Promise<DatasetRelease[] | undefined> {
   if (!pool) return undefined;
   // Private drafts are workflow state, not catalog entries.
-  const result = await pool.query(`SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, agency_id, region, last_checked_at, source_published_at, source_updated_at, freshness_status, attribution, licence_status, connector_id
+  const result = await pool.query(`SELECT id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata, agency_id, region, last_checked_at, source_published_at, source_updated_at, freshness_status, attribution, licence_status, connector_id,
+            (SELECT count(*)::int FROM release_rows r WHERE r.release_id = dataset_releases.id) AS row_count
      FROM dataset_releases
      WHERE COALESCE(metadata->>'visibility', '') <> 'private-draft'
      ORDER BY name`);
@@ -164,6 +165,9 @@ export async function getCatalogReleases(): Promise<DatasetRelease[] | undefined
     licenceStatus: row.licence_status ?? 'unconfirmed',
     attribution: row.attribution || verified?.publisher || '',
     connectorId: row.connector_id ?? null,
+    // Insights and joins read release_rows, so a reader must see which releases have
+    // none before choosing one that cannot run.
+    rowCount: row.row_count ?? 0,
     schema: row.metadata.schema ?? null };
   });
 }

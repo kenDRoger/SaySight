@@ -151,6 +151,13 @@ try {
   });
   assert.ok(finding.id, `finding response: ${JSON.stringify(finding)}`);
   console.log(`OK submitter created fixture finding ${finding.id}`);
+  // The queue is paginated, so a reviewer finds their work by searching the claim
+  // instead of scrolling to whichever page a new finding lands on.
+  const findInQueue = async () => {
+    const queueRegion = maintainerPage.getByRole('region', { name: 'Review queue' });
+    await queueRegion.getByRole('searchbox', { name: 'Search claims' }).fill(finding.claim);
+    await maintainerPage.waitForTimeout(600);
+  };
 
   const decision = await ok(`/api/v1/findings/${finding.id}/decisions`, maintainerSession, {
     method: 'POST', body: JSON.stringify({ status: 'Pending verification', reason: `A11y review ${randomUUID()}` }),
@@ -178,6 +185,7 @@ try {
 
   await maintainerPage.reload({ timeout });
   await openView(maintainerPage, 'Review');
+  await findInQueue();
   const queue = maintainerPage.getByRole('region', { name: 'Review queue' });
   await queue.getByRole('heading', { name: 'Review queue' }).waitFor();
   console.log('OK maintainer sees the Review queue heading');

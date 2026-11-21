@@ -146,8 +146,9 @@ async function runAudit() {
       await page.evaluate(() => document.querySelectorAll('details').forEach((node) => (node.open = true)));
     };
     await openView('Review');
+    // The queue is paginated, so audit whatever it shows rather than one specific row.
     const queue = page.getByRole('region', { name: 'Review queue' });
-    await queue.getByText(finding.id).first().waitFor({ timeout: 10_000 });
+    await queue.locator('li').first().waitFor({ timeout: 10_000 });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     for (const [name, selector, tab] of reviewerViews) {
       await openView(tab);

@@ -49,22 +49,35 @@ try {
   assert.ok(signedInText?.includes(`Signed in as ${maintainerEmail} (maintainer)`), `signed-in line: ${signedInText}`);
   console.log(`OK signed-in line shows ${maintainerEmail} (maintainer)`);
 
+  // The app is routed by hash, so a section is only on screen once its tab is chosen.
+  const openView = async (page, label) => {
+    await page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: label, exact: true }).click();
+    await page.waitForTimeout(150);
+  };
+
   const viewName = `a11y-view-${randomUUID()}`;
   await ok('/api/v1/saved-views', maintainerSession, {
     method: 'POST',
     body: JSON.stringify({ name: viewName, datasetReleaseId: 'bettergov-gaa-coverage-2026-11-07', filters: { year: 2024 } }),
   });
   await maintainerPage.reload({ timeout });
+  await openView(maintainerPage, 'Datasets');
   const catalog = maintainerPage.getByRole('region', { name: 'Dataset catalog' });
   await catalog.getByText('Philippine General Appropriations Act coverage, FY2000–FY2026').first().waitFor();
   assert.ok((await catalog.textContent()).includes('current'), 'catalog freshness status is missing');
   console.log('OK catalog shows the release with agency and freshness metadata');
+  const findings = maintainerPage.getByRole('region', { name: 'Public findings' });
+  await openView(maintainerPage, 'Findings');
+  await findings.waitFor();
+  console.log('OK the public findings view is the landing view');
+  await openView(maintainerPage, 'Review');
   const views = maintainerPage.getByRole('region', { name: 'Saved views' });
   await views.getByText(viewName).waitFor();
   console.log('OK signed-in user sees their saved view');
   await maintainerPage.getByRole('region', { name: 'Upload a dataset draft' }).waitFor();
   console.log('OK dataset upload section is available');
 
+  await openView(maintainerPage, 'Analyse');
   const join = maintainerPage.getByRole('region', { name: 'Curated join' });
   await join.getByRole('button', { name: 'Run curated join' }).click();
   await join.getByText(/Curated join finished: 27 matched rows/).waitFor();
@@ -156,6 +169,7 @@ try {
   console.log('OK moderator removed the comment with a reason');
 
   await maintainerPage.reload({ timeout });
+  await openView(maintainerPage, 'Review');
   const queue = maintainerPage.getByRole('region', { name: 'Review queue' });
   await queue.getByRole('heading', { name: 'Review queue' }).waitFor();
   console.log('OK maintainer sees the Review queue heading');

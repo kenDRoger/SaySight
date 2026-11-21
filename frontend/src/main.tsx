@@ -53,8 +53,13 @@ type Transition = { fromStatus: string; toStatus: string; reason: string; create
 type FindingComment = { id: string; body: string; status: 'visible' | 'removed'; removalReason: string | null; createdAt: string };
 type Explanation = { id: string; text: string; source: 'llm' | 'template'; provider: string | null; model: string | null; templateVersion: string };
 type ApiFailure = Error & { status: number };
+type PublicFinding = Finding & { recipe?: string | null; datasetReleaseId?: string | null; datasetName?: string | null; filters?: Record<string, unknown>; validationStatus?: string | null; createdAt: string };
+type View = 'findings' | 'datasets' | 'analyze' | 'review';
 
 const apiBase = import.meta.env.VITE_API_URL ?? '';
+// Mirrors the API's import cap (api/src/uploadPolicy.ts) so an oversized file fails
+// before it is transferred instead of after the upload is rejected.
+const maxUploadBytes = 100 * 1024 * 1024;
 
 // Mirrors the API state machine so a reviewer is only offered transitions it accepts.
 const nextStatuses: Record<string, string[]> = {
@@ -89,6 +94,32 @@ const releaseColumns = (release: Dataset): SchemaColumn[] => {
 };
 
 const pickId = (release: Dataset): string => release.id ?? release.releaseId;
+
+const recipeLabels: Record<string, string> = { summary: 'Summary', compare: 'Comparison', rank: 'Ranking', distribution: 'Distribution', change_over_time: 'Change over time' };
+const recipeLabel = (recipe: string | null | undefined) => (recipe ? recipeLabels[recipe] ?? recipe.replace(/_/g, ' ') : 'analysis');
+// A finding is checkable only if the card says what was computed, over which period,
+// and whether validation passed.
+const describeFindingFacts = (item: { recipe?: string | null; datasetName?: string | null; filters?: Record<string, unknown>; validationStatus?: string | null; impact: string; createdAt: string }): string => {
+  const facts: string[] = [recipeLabel(item.recipe)];
+  if (item.datasetName) facts.push(item.datasetName);
+  const filters = item.filters ?? {};
+  if (typeof filters.year === 'number') facts.push(`FY${filters.year}`);
+  if (Array.isArray(filters.years)) facts.push(`FY${filters.years.join(' vs FY')}`);
+  facts.push(item.validationStatus ? `validation ${item.validationStatus}` : 'validation not recorded');
+  facts.push(`${item.impact} impact`);
+  facts.push(new Date(item.createdAt).toLocaleDateString());
+  return facts.join(' · ');
+};
+
+const statusSlug = (status: string) => status.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+// Status is the first thing a reader needs; the filter offers the ones that mean
+// something to a visitor rather than every internal state.
+const findingFilters = ['', 'Unverified', 'In review', 'Verified', 'Rejected'];
+// The hash is the router: no dependency, and a section can be linked or reloaded.
+const viewFromHash = (): View => {
+  const name = window.location.hash.replace(/^#\/?/, '');
+  return name === 'datasets' || name === 'analyze' || name === 'review' ? name : 'findings';
+};
 
 const resultText = (value: unknown): string => (value === null || value === undefined ? '—' : String(value));
 
@@ -258,6 +289,13 @@ function App() {
   const [publishStatus, setPublishStatus] = useState('');
   const [publishError, setPublishError] = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [view, setView] = useState<View>(viewFromHash);
+  const [publicFindings, setPublicFindings] = useState<PublicFinding[]>([]);
+  const [publicFilter, setPublicFilter] = useState('');
+  const [publicHasMore, setPublicHasMore] = useState(false);
+  const [publicLoadingMore, setPublicLoadingMore] = useState(false);
+  const [publicReady, setPublicReady] = useState(false);
+  const [publicError, setPublicError] = useState('');
   const reviewer = isReviewer(user?.role);
   const maintainer = user?.role === 'maintainer';
   const agencyName = (id: string | null | undefined) => agencies.find((item) => item.id === id)?.name ?? id ?? 'Unlisted agency';
@@ -267,6 +305,43 @@ function App() {
   const selectedReleases = selectedIds.map((id) => datasets.find((item) => pickId(item) === id)).filter((item): item is Dataset => item !== undefined);
   const runEvidenceId = runResult?.insights.find((insight) => insight.evidence_id)?.evidence_id ?? '';
   const canRun = selectedReleases.length > 0 && (selectedReleases.length === 1 || (Boolean(leftKey) && Boolean(rightKey)));
+
+  async function loadMoreFindings() {
+    setPublicLoadingMore(true);
+    try {
+      const query = new URLSearchParams({ limit: String(publicPageSize), offset: String(publicFindings.length) });
+      if (publicFilter) query.set('status', publicFilter);
+      const body = await apiRequest<{ findings: PublicFinding[] }>(`/api/v1/findings?${query}`);
+      setPublicFindings((current) => [...current, ...body.findings]);
+      setPublicHasMore(body.findings.length === publicPageSize);
+    } catch (reason) { setPublicError(failureMessage(reason, 'The findings list is currently unavailable.')); }
+    finally { setPublicLoadingMore(false); }
+  }
+
+  useEffect(() => {
+    const onHashChange = () => setView(viewFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // A page of twenty keeps the landing readable; more is one click away. The API caps
+  // the whole list at 100, so this never becomes an unbounded read.
+  const publicPageSize = 20;
+  useEffect(() => {
+    if (view !== 'findings') return;
+    let active = true;
+    const query = new URLSearchParams({ limit: String(publicPageSize) });
+    if (publicFilter) query.set('status', publicFilter);
+    setPublicError('');
+    fetch(`${apiBase}/api/v1/findings?${query}`).then(async (response) => {
+      const body = await response.json() as { findings?: PublicFinding[]; error?: string };
+      if (!response.ok) throw new Error('The findings list is currently unavailable.');
+      return body.findings ?? [];
+    }).then((list) => { if (active) { setPublicFindings(list); setPublicHasMore(list.length === publicPageSize); } })
+      .catch((reason: unknown) => { if (active) { setPublicFindings([]); setPublicHasMore(false); setPublicError(failureMessage(reason, 'The findings list is currently unavailable.')); } })
+      .finally(() => { if (active) setPublicReady(true); });
+    return () => { active = false; };
+  }, [view, publicFilter]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -479,6 +554,10 @@ function App() {
   async function registerUpload(event: FormEvent) {
     event.preventDefault();
     if (!uploadFile) return;
+    if (uploadFile.size > maxUploadBytes) {
+      setUploadError(`That file is ${(uploadFile.size / 1024 / 1024).toFixed(1)} MB; the limit is 100 MB.`);
+      return;
+    }
     setUploadError(''); setUploadDraft(undefined); setPublishStatus(''); setPublishError(''); setUploadStatus('Uploading and validating…');
     try {
       const response = await fetch(`${apiBase}/api/v1/imports/register?filename=${encodeURIComponent(uploadFile.name)}&name=${encodeURIComponent(uploadName)}`, {
@@ -599,32 +678,82 @@ function App() {
     finally { setLoading(false); }
   }
 
-  return <main>
-    <header>
-      <h1>SaySight</h1><p className="lede">Turn public datasets into checkable findings: every result shows its source, calculation, validation, and limitations.</p>
-      <nav className="guide" aria-label="What you can do here">
-        <h2 className="guide-title">What you can do here</h2>
-        <ol>
-          <li><a href="#dataset-heading">Explore</a> a cataloged release and its field definitions.</li>
-          <li><a href="#analysis-heading">Run</a> one of five deterministic recipes and see the matching rows first.</li>
-          <li><a href="#join-heading">Compare</a> two releases with the curated join and its diagnostics.</li>
-        </ol>
-        <p className="muted">Browsing, filtering, and analysis are anonymous. Sign in to save findings, comment, review, or upload.</p>
+  const tabs: Array<{ key: View; label: string }> = [
+    { key: 'findings', label: 'Findings' },
+    { key: 'datasets', label: 'Datasets' },
+    { key: 'analyze', label: 'Analyse' },
+    ...(user ? [{ key: 'review' as View, label: reviewer ? 'Review' : 'Your work' }] : []),
+  ];
+
+  return <div className="app">
+    <header className="topbar">
+      <div className="brand">
+        <a className="wordmark" href="#/findings">SaySight</a>
+        <p className="tagline">Public datasets, checked by people.</p>
+      </div>
+      <nav className="tabs" aria-label="Sections">
+        {tabs.map((tab) => <a key={tab.key} href={`#/${tab.key}`} className={view === tab.key ? 'tab tab-active' : 'tab'} aria-current={view === tab.key ? 'page' : undefined}>{tab.label}</a>)}
       </nav>
-      <div className="session">
-        {!sessionReady ? <p role="status">Checking account…</p> : user ? <>
-          <p role="status">Signed in as <strong>{user.email}</strong> ({user.role}).</p>
-          <Button type="button" variant="outline" size="md" onClick={signOut}>Sign out</Button>
-        </> : <>
+      <div className="account">
+        {!sessionReady ? <span className="muted">Checking account…</span> : user ? <>
+          <p role="status" className="muted">Signed in as <strong>{user.email}</strong> ({user.role})</p>
+          <Button type="button" variant="outline" size="sm" onClick={signOut}>Sign out</Button>
+        </> : <details className="signin">
+          <summary>Sign in</summary>
           <form onSubmit={requestLink}>
             <div className="form-field"><Label htmlFor="sign-in-email">Email for a sign-in link</Label><Input id="sign-in-email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></div>
             <Button type="submit" variant="primary" size="md" isLoading={requestingLink} disabled={requestingLink}>{requestingLink ? 'Sending…' : 'Send sign-in link'}</Button>
           </form>
           {sessionMessage && <p role="status" className="muted">{sessionMessage}</p>}
-        </>}
+        </details>}
         {sessionError && <p role="alert" className="error">{sessionError}</p>}
       </div>
     </header>
+    <main>
+      {view === 'findings' && <section className="view" aria-labelledby="findings-heading">
+        <div className="view-head">
+          <h1 id="findings-heading">Public findings</h1>
+          <p className="lede">Each finding is one analysis of a cataloged dataset, stated as a claim you can check. The status shows how far human review has gone, and the evidence behind it does not change after the fact.</p>
+        </div>
+        <div className="status-filter" role="group" aria-label="Filter findings by status">
+          {findingFilters.map((value) => <button key={value || 'all'} type="button" className={publicFilter === value ? 'chip chip-active' : 'chip'} aria-pressed={publicFilter === value} onClick={() => setPublicFilter(value)}>{value || 'All'}</button>)}
+        </div>
+        {publicError && <p role="alert" className="error">{publicError}</p>}
+        {!publicReady && !publicError && <p className="muted">Loading findings…</p>}
+        {publicReady && !publicError && publicFindings.length === 0 && <div className="empty">
+          <h2>{publicFilter ? `No findings are ${publicFilter.toLowerCase()} right now.` : 'No findings have been published yet.'}</h2>
+          <p>Anyone can produce one: pick a cataloged dataset, run a deterministic analysis, and save the result as a finding. It starts Unverified, and a reviewer decides what happens next.</p>
+          <a className="cta" href="#/analyze">Analyse a dataset</a>
+        </div>}
+        {publicFindings.length > 0 && <ul className="finding-list">
+          {publicFindings.map((item) => <li key={item.id} className="finding-card">
+            <div className="finding-top">
+              <span className={`pill pill-${statusSlug(item.status)}`}>{item.status}</span>
+              {isTestFixture(datasets.find((release) => pickId(release) === item.datasetReleaseId) ?? ({ name: item.datasetReleaseId ?? '' } as Dataset)) && <span className="badge">Test data</span>}
+              <span className="finding-meta">{describeFindingFacts(item)}</span>
+            </div>
+            <p className="claim">{item.claim || 'No claim was recorded for this finding.'}</p>
+            <a href={`${apiBase}/api/v1/findings/${encodeURIComponent(item.id)}/page`}>Read the finding and its evidence</a>
+          </li>)}
+        </ul>}
+        {publicHasMore && <div className="more"><Button type="button" variant="outline" size="md" onClick={loadMoreFindings} isLoading={publicLoadingMore} disabled={publicLoadingMore}>{publicLoadingMore ? 'Loading…' : 'Show more findings'}</Button></div>}
+        <div className="promise">
+          <h2>What the status words mean</h2>
+          <dl>
+            <div><dt>Unverified</dt><dd>Submitted; nobody has reviewed it yet.</dd></div>
+            <div><dt>In review</dt><dd>A reviewer is checking the evidence against the cited release.</dd></div>
+            <div><dt>Verified</dt><dd>A reviewer confirmed the source, release, calculation, and stated interpretation.</dd></div>
+            <div><dt>Rejected</dt><dd>A reviewer recorded why the finding does not hold.</dd></div>
+            <div><dt>Insufficient evidence</dt><dd>The evidence could not settle the claim either way.</dd></div>
+          </dl>
+          <p className="muted">Verification is not proof of wrongdoing or of cause. It means the stated calculation was checked against the cited release under this process.</p>
+        </div>
+      </section>}
+      {view === 'datasets' && <>
+        <div className="view-head">
+          <h1>Datasets</h1>
+          <p className="lede">Choose a release to analyse on its own, or two releases to join on a key you pick. Every entry lists its agency, freshness, and licence state before you commit to it.</p>
+        </div>
     <section aria-labelledby="dataset-heading">
       <Card className="card">
       <h2 id="dataset-heading">Dataset catalog</h2>
@@ -723,6 +852,27 @@ function App() {
       })}
       </Card>
     </section>
+      </>}
+      {view === 'analyze' && <>
+        <div className="view-head">
+          <h1>Analyse</h1>
+          <p className="lede">Run a deterministic analysis, see the matching rows before you commit, and keep the result only if you want it reviewed.</p>
+        </div>
+    <section aria-labelledby="analysis-heading">
+      <Card className="card">
+      <h2 id="analysis-heading">Run a reproducible analysis</h2>
+      <p className="muted">Pick a recipe and filters. The matching row count updates before you run, and every run executes twice so reproducibility is recorded, not assumed.</p>
+      <form onSubmit={submit}>
+        <div className="form-field"><Label htmlFor="recipe">Recipe</Label><select id="recipe" value={recipe} onChange={(event) => setRecipe(event.target.value)}><option value="summary">Summary</option><option value="compare">Compare</option><option value="rank">Rank</option><option value="distribution">Distribution</option><option value="change_over_time">Change over time</option></select></div>
+        {recipe === 'compare' ? <><div className="form-field"><Label htmlFor="compare-year-a">First fiscal year</Label><select id="compare-year-a" value={compareYears[0]} onChange={(event) => setCompareYears([event.target.value, compareYears[1]])}>{(dataset?.coverage.fiscalYears ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select></div><div className="form-field"><Label htmlFor="compare-year-b">Second fiscal year</Label><select id="compare-year-b" value={compareYears[1]} onChange={(event) => setCompareYears([compareYears[0], event.target.value])}>{(dataset?.coverage.fiscalYears ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select></div></> : <div className="form-field"><Label htmlFor="fiscal-year">Fiscal year (optional)</Label><Input id="fiscal-year" inputMode="numeric" type="number" min="2000" max="2026" value={year} onChange={(event) => setYear(event.target.value)} placeholder="All years" /></div>}
+        <div className="form-field"><Label htmlFor="coverage-status">Coverage status (optional)</Label><select id="coverage-status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="published_source_baseline">Published source baseline</option><option value="partial_historical_coverage">Partial historical coverage</option><option value="reenacted_no_new_gaa">Reenacted, no new GAA</option><option value="published_editions_differ">Published editions differ</option></select></div>
+        {matchingRows !== undefined && <p className="muted">Matching coverage rows: <strong>{matchingRows}</strong></p>}{previewError && <p role="status" className="muted">{previewError}</p>}
+        <Button type="submit" variant="primary" size="md" isLoading={loading} disabled={loading}>{loading ? 'Running…' : 'Run analysis'}</Button>
+      </form>
+      {error && <p role="alert" className="error">{error}</p>}{validationFailure && <div role="status"><p>Validation: <strong>{validationFailure.status}</strong>{validationFailure.reproducibility_status && <> · Reproducibility: <strong>{validationFailure.reproducibility_status}</strong></>}</p><ul>{validationFailure.checks.map((check) => <li key={check}>{check}</li>)}</ul></div>}
+      {analysis && <div className="result" aria-live="polite">{analysis.recipe === 'rank' && isRankResult(analysis.result) && <RankChart rows={analysis.result} />}{analysis.recipe === 'change_over_time' && isTrendResult(analysis.result) && <TrendChart rows={analysis.result} />}{analysis.recipe === 'distribution' && isDistributionResult(analysis.result) && <DistributionChart result={analysis.result} />}{analysis.recipe === 'compare' && isCompareResult(analysis.result) && <CompareChart result={analysis.result} />}<h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><details><summary>Raw result JSON</summary><pre>{JSON.stringify(analysis.result, null, 2)}</pre></details>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <div className="form-field"><Label htmlFor="finding-claim">Claim</Label><textarea id="finding-claim" required minLength={20} maxLength={1000} value={claim} onChange={(event) => setClaim(event.target.value)} placeholder="State what a reviewer should verify about this result." /></div>}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
+      </Card>
+    </section>
     <section aria-labelledby="insights-heading">
       <Card className="card">
       <h2 id="insights-heading">Run insights</h2>
@@ -730,7 +880,11 @@ function App() {
       {selectedReleases.length > 0 && <ol className="run-selection">
         {selectedReleases.map((release, index) => <li key={pickId(release)}>{index === 0 ? 'Left' : 'Right'}: {release.name}</li>)}
       </ol>}
-      <form onSubmit={submitRun}>
+      {selectedReleases.length === 0 ? <div className="empty">
+        <h3>No dataset is selected yet</h3>
+        <p>This view runs every recipe the chosen data supports. Choose one release, or two to join, and come back.</p>
+        <a className="cta" href="#/datasets">Choose datasets</a>
+      </div> : <form onSubmit={submitRun}>
         {selectedReleases.length === 2 && <>
           <div className="form-field"><Label htmlFor="run-left-key">Join key from the left release ({selectedReleases[0].name})</Label><select id="run-left-key" value={leftKey} onChange={(event) => setLeftKey(event.target.value)}><option value="">Choose a column</option>{releaseColumns(selectedReleases[0]).map((column) => <option key={column.name} value={column.name}>{column.name} ({column.type ?? 'unknown type'})</option>)}</select></div>
           <div className="form-field"><Label htmlFor="run-right-key">Join key from the right release ({selectedReleases[1].name})</Label><select id="run-right-key" value={rightKey} onChange={(event) => setRightKey(event.target.value)}><option value="">Choose a column</option>{releaseColumns(selectedReleases[1]).map((column) => <option key={column.name} value={column.name}>{column.name} ({column.type ?? 'unknown type'})</option>)}</select></div>
@@ -738,13 +892,11 @@ function App() {
         <div className="form-field"><Label htmlFor="run-period-a">First period for compare (optional)</Label><Input id="run-period-a" value={periodA} onChange={(event) => setPeriodA(event.target.value)} placeholder="e.g. 2024" /></div>
         <div className="form-field"><Label htmlFor="run-period-b">Second period for compare (optional)</Label><Input id="run-period-b" value={periodB} onChange={(event) => setPeriodB(event.target.value)} placeholder="e.g. 2025" /></div>
         <Button type="submit" variant="primary" size="md" isLoading={running} disabled={running || !canRun}>{running ? 'Running…' : 'Run insights'}</Button>
-      </form>
+      </form>}
       {running && <p role="status">Running insights…</p>}
-      {datasets.length > 0 && !canRun && !running && <p className="muted">{selectedReleases.length === 0
-        ? 'Select at least one dataset above to run.'
-        : selectedReleases.some((release) => releaseColumns(release).length === 0)
-          ? 'A selected release exposes no columns, so its join keys cannot be chosen.'
-          : 'Choose a join key from each side to enable the run.'}</p>}
+      {datasets.length > 0 && !canRun && !running && selectedReleases.length > 0 && <p className="muted">{selectedReleases.some((release) => releaseColumns(release).length === 0)
+        ? 'A selected release exposes no columns, so its join keys cannot be chosen.'
+        : 'Choose a join key from each side to enable the run.'}</p>}
       {runError && <p role="alert" className="error">{runError}</p>}
       {runResult && <p role="status">{runResult.summary}</p>}
       {runResult && <>
@@ -769,30 +921,12 @@ function App() {
                 <div className="form-field"><Label htmlFor="run-claim">Claim</Label><textarea id="run-claim" required minLength={20} maxLength={1000} value={runClaim} onChange={(event) => setRunClaim(event.target.value)} placeholder="State what a reviewer should verify about this result." /></div>
                 <Button type="button" variant="outline" size="md" onClick={saveRunFinding} disabled={savingRun}>Save as unverified finding</Button>
               </>
-            : <>
-                <Button type="button" variant="outline" size="md" disabled>Save as unverified finding</Button>
-                <p className="muted">No evidence exists for this run yet, so saving is unavailable: evidence is created only when the analysis is saved.</p>
-              </>}
+            : <p className="muted">This run is read-only: it answers what the data says, and writes no evidence. To submit a finding, run a reproducible analysis, which records evidence you can attach a claim to. <a href="#/analyze">Go to reproducible analysis</a></p>}
           {saveStatus && <p role="status" className="muted">{saveStatus}</p>}
           {saveError && <p role="alert" className="error">{saveError}</p>}
           <p><a href={`${apiBase}/api/v1/runs/${runResult.run_id}`}>View this run's public JSON</a></p>
         </div>
       </>}
-      </Card>
-    </section>
-    <section aria-labelledby="analysis-heading">
-      <Card className="card">
-      <h2 id="analysis-heading">Run a reproducible analysis</h2>
-      <p className="muted">Pick a recipe and filters. The matching row count updates before you run, and every run executes twice so reproducibility is recorded, not assumed.</p>
-      <form onSubmit={submit}>
-        <div className="form-field"><Label htmlFor="recipe">Recipe</Label><select id="recipe" value={recipe} onChange={(event) => setRecipe(event.target.value)}><option value="summary">Summary</option><option value="compare">Compare</option><option value="rank">Rank</option><option value="distribution">Distribution</option><option value="change_over_time">Change over time</option></select></div>
-        {recipe === 'compare' ? <><div className="form-field"><Label htmlFor="compare-year-a">First fiscal year</Label><select id="compare-year-a" value={compareYears[0]} onChange={(event) => setCompareYears([event.target.value, compareYears[1]])}>{(dataset?.coverage.fiscalYears ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select></div><div className="form-field"><Label htmlFor="compare-year-b">Second fiscal year</Label><select id="compare-year-b" value={compareYears[1]} onChange={(event) => setCompareYears([compareYears[0], event.target.value])}>{(dataset?.coverage.fiscalYears ?? []).map((value) => <option key={value} value={value}>{value}</option>)}</select></div></> : <div className="form-field"><Label htmlFor="fiscal-year">Fiscal year (optional)</Label><Input id="fiscal-year" inputMode="numeric" type="number" min="2000" max="2026" value={year} onChange={(event) => setYear(event.target.value)} placeholder="All years" /></div>}
-        <div className="form-field"><Label htmlFor="coverage-status">Coverage status (optional)</Label><select id="coverage-status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="published_source_baseline">Published source baseline</option><option value="partial_historical_coverage">Partial historical coverage</option><option value="reenacted_no_new_gaa">Reenacted, no new GAA</option><option value="published_editions_differ">Published editions differ</option></select></div>
-        {matchingRows !== undefined && <p className="muted">Matching coverage rows: <strong>{matchingRows}</strong></p>}{previewError && <p role="status" className="muted">{previewError}</p>}
-        <Button type="submit" variant="primary" size="md" isLoading={loading} disabled={loading}>{loading ? 'Running…' : 'Run analysis'}</Button>
-      </form>
-      {error && <p role="alert" className="error">{error}</p>}{validationFailure && <div role="status"><p>Validation: <strong>{validationFailure.status}</strong>{validationFailure.reproducibility_status && <> · Reproducibility: <strong>{validationFailure.reproducibility_status}</strong></>}</p><ul>{validationFailure.checks.map((check) => <li key={check}>{check}</li>)}</ul></div>}
-      {analysis && <div className="result" aria-live="polite">{analysis.recipe === 'rank' && isRankResult(analysis.result) && <RankChart rows={analysis.result} />}{analysis.recipe === 'change_over_time' && isTrendResult(analysis.result) && <TrendChart rows={analysis.result} />}{analysis.recipe === 'distribution' && isDistributionResult(analysis.result) && <DistributionChart result={analysis.result} />}{analysis.recipe === 'compare' && isCompareResult(analysis.result) && <CompareChart result={analysis.result} />}<h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><details><summary>Raw result JSON</summary><pre>{JSON.stringify(analysis.result, null, 2)}</pre></details>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <div className="form-field"><Label htmlFor="finding-claim">Claim</Label><textarea id="finding-claim" required minLength={20} maxLength={1000} value={claim} onChange={(event) => setClaim(event.target.value)} placeholder="State what a reviewer should verify about this result." /></div>}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
       </Card>
     </section>
     <section aria-labelledby="join-heading">
@@ -824,6 +958,18 @@ function App() {
       </div>}
       </Card>
     </section>
+      </>}
+      {view === 'review' && <>
+        <div className="view-head">
+          <h1>{reviewer ? 'Review' : 'Your work'}</h1>
+          <p className="lede">{reviewer
+            ? 'Decide what happens to a finding, read the evidence behind it, and record why. Your decision and its reason stay in the history.'
+            : 'Saved views, dataset drafts, and the findings you have submitted.'}</p>
+        </div>
+        {!user && <div className="empty">
+          <h2>Sign in to keep work here</h2>
+          <p>Browsing, filtering, and analysis are anonymous. An account is only needed to submit a finding, comment, review, or upload a dataset.</p>
+        </div>}
     {user && <section aria-labelledby="views-heading">
       <Card className="card">
       <h2 id="views-heading">Saved views</h2>
@@ -940,7 +1086,13 @@ function App() {
       </>}
       </Card>
     </section>}
-  </main>;
+      </>}
+    </main>
+    <footer className="footer">
+      <p>SaySight turns public datasets into checkable public findings. Every number here is reproducible from a cited release, and no figure is written by a model.</p>
+      <p className="muted"><a href="#/findings">Findings</a> · <a href="#/datasets">Datasets</a> · <a href="#/analyze">Analyse</a></p>
+    </footer>
+  </div>;
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

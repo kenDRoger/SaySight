@@ -99,11 +99,15 @@ async function runAudit() {
     args: ['--no-sandbox'],
   });
   const finding = await createFixture(`saysight_session=${submitter}`, `saysight_session=${session}`);
+  // Each region lives in its own routed view now, so a region is audited after its tab.
   const reviewerViews = [
-    ['review queue', '[aria-labelledby="queue-heading"]'],
-    ['saved views', '[aria-labelledby="views-heading"]'],
-    ['upload', '[aria-labelledby="upload-heading"]'],
-    ['curated join', '[aria-labelledby="join-heading"]'],
+    ['review queue', '[aria-labelledby="queue-heading"]', 'Review'],
+    ['saved views', '[aria-labelledby="views-heading"]', 'Review'],
+    ['upload', '[aria-labelledby="upload-heading"]', 'Review'],
+    ['findings list', '[aria-labelledby="findings-heading"]', 'Findings'],
+    ['datasets', '[aria-labelledby="dataset-heading"]', 'Datasets'],
+    ['sources', '[aria-labelledby="sources-heading"]', 'Datasets'],
+    ['curated join', '[aria-labelledby="join-heading"]', 'Analyse'],
   ];
   const results = [];
   const tags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
@@ -128,11 +132,17 @@ async function runAudit() {
     await page.goto(app, { waitUntil: 'networkidle' });
     const signedIn = page.getByRole('status').filter({ hasText: 'Signed in as' });
     await signedIn.waitFor();
+    const openView = async (label) => {
+      await page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: label, exact: true }).click();
+      await page.waitForTimeout(150);
+      await page.evaluate(() => document.querySelectorAll('details').forEach((node) => (node.open = true)));
+    };
+    await openView('Review');
     const queue = page.getByRole('region', { name: 'Review queue' });
     await queue.getByText(finding.id).first().waitFor({ timeout: 10_000 });
-    await page.evaluate(() => document.querySelectorAll('details').forEach((node) => (node.open = true)));
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    for (const [name, selector] of reviewerViews) {
+    for (const [name, selector, tab] of reviewerViews) {
+      await openView(tab);
       await page.locator(selector).waitFor();
       const { violations } = await new AxeBuilder({ page })
         .include(selector)

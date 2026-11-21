@@ -192,8 +192,12 @@ th, td { text-align: left; vertical-align: top; padding: .45rem .5rem; border-bo
 .chart-figure rect:focus-visible, .chart-figure circle:focus-visible { outline: none; stroke: var(--ink); stroke-width: 3px; }
 
 @media (max-width: 46rem) {
-  .topbar { align-items: start; }
-  .account { margin-left: 0; }
+  .topbar { align-items: start; gap: .5rem .75rem; }
+  .account { margin-left: 0; gap: .35rem; }
+  /* The three roles must fit one row at 375px: each extra row costs a fifth of the screen. */
+  .role-switch { gap: .25rem; }
+  .role-switch .chip { min-height: 2rem; padding: .2rem .55rem; font-size: .82rem; }
+  .demo-badge { padding: .1rem .4rem; font-size: .68rem; }
   main { padding: 1.25rem 1rem 2.5rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }

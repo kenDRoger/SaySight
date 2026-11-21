@@ -949,12 +949,12 @@ function App() {
         ? 'A selected release exposes no columns, so its join keys cannot be chosen.'
         : 'Choose a join key from each side to enable the run.'}</p>}
       {runError && <p role="alert" className="error">{runError}</p>}
-      {runResult && <p role="status">{runResult.summary}</p>}
+      {runResult && <p role="status" className="run-summary">{runResult.summary}</p>}
       {runResult && <>
         <h3>Insights</h3>
         <div className="insight-list">
           {runResult.insights.map((insight) => <article className="insight-card" key={insight.id}>
-            <h4>{insight.recipe}</h4>
+            <h4>{recipeLabel(insight.recipe)}</h4>
             <p>Status: <strong>{insight.status}</strong></p>
             {insight.status === 'skipped'
               ? <p><strong>Skipped:</strong> {insight.reason || 'no reason reported.'}</p>

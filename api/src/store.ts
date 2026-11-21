@@ -256,6 +256,41 @@ export async function listReleaseChecks(releaseId: string): Promise<ReleaseCheck
     note: row.note, createdAt: row.created_at.toISOString() }));
 }
 
+export type ConnectorCheck = {
+  id: string;
+  connector: string;
+  status: 'ok' | 'failed';
+  httpStatus: number | null;
+  datasetCount: number | null;
+  message: string;
+  createdAt: string;
+};
+
+// A failed portal read is written here too, so it is reported instead of swallowed.
+export async function insertConnectorCheck(input: Omit<ConnectorCheck, 'id' | 'createdAt'>): Promise<ConnectorCheck> {
+  if (!pool) throw new Error('database_required');
+  const check: ConnectorCheck = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
+  await pool.query(
+    `INSERT INTO connector_checks (id, connector, status, http_status, dataset_count, message)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [check.id, check.connector, check.status, check.httpStatus, check.datasetCount, check.message],
+  );
+  return check;
+}
+
+// One row per connector: the most recent observation is the connector's state.
+export async function latestConnectorChecks(): Promise<ConnectorCheck[]> {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT DISTINCT ON (connector) id, connector, status, http_status, dataset_count, message, created_at
+     FROM connector_checks ORDER BY connector, created_at DESC`,
+  );
+  return result.rows.map((row) => ({ id: row.id, connector: row.connector, status: row.status,
+    httpStatus: row.http_status === null ? null : Number(row.http_status),
+    datasetCount: row.dataset_count === null ? null : Number(row.dataset_count),
+    message: row.message, createdAt: row.created_at.toISOString() }));
+}
+
 export async function saveNormalizedCoverage(rows: Array<{ DatasetReleaseID: string; FiscalYear: number; CoverageStatus: string; SourceRowCount: number; AmountPesos?: number; Scopes?: Record<string, unknown>; Notes: string[] }>, release: DatasetRelease): Promise<number> {
   if (pool) {
     const client = await pool.connect();

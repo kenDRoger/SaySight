@@ -944,3 +944,64 @@ test('only a maintainer can request a refresh check and an unknown release is no
   assert.equal(missing.status, 404);
   assert.deepEqual(await responseJson<unknown>(missing), { error: 'dataset_release_not_found' });
 });
+
+// Connector registry and status log (MVP-E).
+
+type ConnectorEntry = { id: string; name: string; protocol: string; kind: string; externalBenchmark: boolean; last_check: { status: string; httpStatus: number | null; datasetCount: number | null; message: string; createdAt: string } | null };
+
+const connectorCheck = (id: string, cookie?: string) =>
+  api(`/api/v1/connectors/${id}/check`, { method: 'POST', ...(cookie ? { cookie } : {}) });
+
+test('the connector catalog is public and lists every source', async (t) => {
+  if (!ready(t)) return;
+  const response = await api('/api/v1/connectors');
+  const text = await responseText(response);
+  assert.equal(response.status, 200, text);
+  const { connectors } = JSON.parse(text) as { connectors: ConnectorEntry[] };
+  assert.equal(connectors.length, 8);
+  assert.ok(connectors.every((connector) => connector.name && connector.protocol && connector.kind));
+  for (const id of ['data-gov-ph', 'psada', 'opendata-org-ph', 'cids']) {
+    assert.equal(connectors.find((connector) => connector.id === id)?.kind, 'link-out', `${id} is a listed link-out`);
+  }
+  assert.equal(connectors.find((connector) => connector.id === 'worldbank')?.externalBenchmark, true);
+  assert.equal(connectors.find((connector) => connector.id === 'bettergov')?.externalBenchmark, false);
+});
+
+test('a maintainer check of a link-out connector is recorded without fetching anything', async (t) => {
+  if (!ready(t)) return;
+  const response = await connectorCheck('cids', (await maintainer()).cookie);
+  const text = await responseText(response);
+  assert.equal(response.status, 200, text);
+  const body = JSON.parse(text) as { connector: string; status: string; dataset_count: number; http_status: number | null; message: string };
+  assert.deepEqual(
+    { connector: body.connector, status: body.status, dataset_count: body.dataset_count, http_status: body.http_status },
+    { connector: 'cids', status: 'ok', dataset_count: 0, http_status: null },
+  );
+  assert.match(body.message, /not fetched/);
+  const listed = await responseJson<{ connectors: ConnectorEntry[] }>(await api('/api/v1/connectors'));
+  const cids = listed.connectors.find((connector) => connector.id === 'cids');
+  assert.equal(cids?.last_check?.status, 'ok');
+  assert.equal(cids?.last_check?.datasetCount, 0);
+  assert.ok(cids?.last_check?.createdAt);
+});
+
+test('an unknown connector check returns 404 for a maintainer', async (t) => {
+  if (!ready(t)) return;
+  const response = await connectorCheck('no-such-portal', (await maintainer()).cookie);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'connector_not_found' });
+});
+
+test('a submitter cannot check a connector', async (t) => {
+  if (!ready(t)) return;
+  const response = await connectorCheck('bettergov', (await signIn('connector-submitter')).cookie);
+  assert.equal(response.status, 403);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'maintainer_required' });
+});
+
+test('an anonymous connector check is refused with 401', async (t) => {
+  if (!ready(t)) return;
+  const response = await connectorCheck('bettergov');
+  assert.equal(response.status, 401);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'sign_in_required' });
+});

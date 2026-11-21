@@ -4,7 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { createComment, createFinding, createSavedView, datasetReleaseExists, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, insertConnectorCheck, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { connectors, getConnector } from './connectors.js';
 import { classifyCheck, computeDrift, sourceFingerprint, summarise, type ReleaseFingerprint } from './refresh.js';
 import { createExplainer } from './explain.js';
 import { checkRemoval, validateCommentBody, validateRemovalReason } from './comments.js';
@@ -51,7 +52,8 @@ type WorkerAnalysisResponse = {
 // input (400 invalid_filter adds the offending `parameter`),
 // 401 sign_in_required / invalid_or_expired_link, 403 for denied roles,
 // 404 for missing records, 409 for state conflicts, 413 for capped bodies, 422
-// for rejected imports, 429 upload_busy, and 503 for unavailable dependencies.
+// for rejected imports, 429 upload_busy, 502 when a connector check cannot read
+// its portal, and 503 for unavailable dependencies.
 // The findings/:id/page route is HTML and returns 404 or 503 as plain text.
 const maxConcurrentUploads = 2;
 
@@ -407,6 +409,54 @@ const server = createServer((request, response) => {
 
   if (request.method === 'GET' && request.url === '/api/v1/agencies') {
     listAgencies().then((agencies) => json(response, 200, { agencies })).catch(() => json(response, 503, { error: 'agency_catalog_unavailable' }));
+    return;
+  }
+
+  if (request.method === 'GET' && request.url === '/api/v1/connectors') {
+    latestConnectorChecks().then((checks) => {
+      const latest = new Map(checks.map((check) => [check.connector, check]));
+      json(response, 200, {
+        connectors: connectors.map((connector) => ({
+          id: connector.id, name: connector.name, protocol: connector.protocol, kind: connector.kind,
+          externalBenchmark: connector.externalBenchmark === true,
+          last_check: latest.get(connector.id) ?? null,
+        })),
+      });
+    }).catch(() => json(response, 503, { error: 'connector_log_unavailable' }));
+    return;
+  }
+
+  const connectorCheckMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/connectors\/([^/]+)\/check$/) : undefined;
+  if (connectorCheckMatch) {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    (async () => {
+      const user = await auth.session(requestSessionToken(request));
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
+      const connector = getConnector(connectorCheckMatch[1]);
+      if (!connector) { json(response, 404, { error: 'connector_not_found' }); return; }
+      let status: 'ok' | 'failed' = 'ok';
+      let httpStatus: number | null = null;
+      let datasetCount: number | null = null;
+      let message = '';
+      try {
+        const listing = await connector.listDatasets(fetch);
+        const linkOut = connector.kind === 'link-out';
+        // A link-out is never fetched, so it reports no HTTP status rather than a fake one.
+        httpStatus = linkOut ? null : listing.httpStatus;
+        datasetCount = listing.datasets.length;
+        message = linkOut ? 'link-out source; not fetched' : '';
+      } catch (error) {
+        status = 'failed';
+        message = error instanceof Error ? error.message : String(error);
+        // Each adapter names the connector and the HTTP status in its message.
+        const named = /HTTP (\d{3})/.exec(message);
+        httpStatus = named ? Number(named[1]) : null;
+      }
+      // The row is written for a failure too: an unreadable portal is reported, not hidden.
+      await insertConnectorCheck({ connector: connector.id, status, httpStatus, datasetCount, message });
+      json(response, status === 'ok' ? 200 : 502, { connector: connector.id, status, dataset_count: datasetCount, http_status: httpStatus, message });
+    })().catch(() => json(response, 503, { error: 'connector_log_unavailable' }));
     return;
   }
 

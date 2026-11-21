@@ -26,6 +26,7 @@ import { clearSessionCookie, createAuth, defaultTransport, readCookie, serialize
 import { createPgAuthStore } from './authpg.js';
 
 const port = Number(process.env.PORT ?? 3000);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`PORT must be a port number, got ${process.env.PORT ?? ''}`);
 const workerUrl = process.env.WORKER_URL ?? 'http://127.0.0.1:8080';
 const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 
@@ -61,7 +62,11 @@ type WorkerAnalysisResponse = {
 
 // Public endpoint contract for every route in this file: success is 200, 201,
 // 202, or 204; failures use a JSON { error: '<code>' } body with 400 for bad
-// input (400 invalid_filter adds the offending `parameter`),
+// input (400 invalid_filter adds the offending `parameter`; 400 invalid_token,
+// invalid_filename, invalid_relationship_id, and invalid_metadata likewise name the
+// problem), 422 when a rerun disagrees with the first calculation (reproducibility) or an
+// import is rejected, and a 303 redirect from the browser path of /auth/verify,
+// which answers JSON only to a client that asks for it.
 // 401 sign_in_required / invalid_or_expired_link, 403 for denied roles,
 // 404 for missing records, 409 for state conflicts, 413 for capped bodies, 422
 // for rejected imports, 429 upload_busy, 502 when a connector check cannot read
@@ -90,11 +95,16 @@ function readBoundedBody(request: IncomingMessage, limit: number): Promise<{ dat
     request.on('data', (chunk: Buffer) => {
       if (settled) return;
       size += chunk.length;
+      // Drain instead of destroying: the socket must survive long enough for the 413.
       if (size > limit) { finish({ denied: true }); request.resume(); return; }
       chunks.push(chunk);
     });
     request.on('end', () => finish({ data: Buffer.concat(chunks) }));
     request.on('error', () => finish({ failed: true }));
+    // An aborted upload emits neither 'end' nor reliably 'error'. Without these the
+    // promise never settles and the upload gate is never released.
+    request.on('aborted', () => finish({ failed: true }));
+    request.on('close', () => finish({ failed: true }));
   });
 }
 
@@ -192,18 +202,10 @@ async function normalizeReleaseRows(filename: string, data: Buffer): Promise<{
   return { pages, truncated: total > maxReleaseRows || offset < total };
 }
 
-const columnTypes = ['integer', 'number', 'text', 'date', 'boolean'];
-const columnsFromSchema = (schema: Record<string, unknown> | undefined): Column[] => {
-  const raw = schema?.columns;
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((entry): Column[] => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-    const candidate = entry as { name?: unknown; type?: unknown };
-    if (typeof candidate.name !== 'string') return [];
-    const type = columnTypes.includes(String(candidate.type)) ? candidate.type as Column['type'] : 'text';
-    return [{ name: candidate.name, type }];
-  });
-};
+// The verified release this deployment ships with, named rather than positional.
+const betterGovRelease = catalog.find((item) => item.id === 'bettergov-gaa-coverage-2026-11-07');
+if (!betterGovRelease) throw new Error('catalog is missing the verified bettergov-gaa-coverage-2026-11-07 release');
+const columnsFromSchema = (schema: Record<string, unknown> | undefined): Column[] => schemaColumns(schema);
 const grainFromSchema = (schema: Record<string, unknown> | undefined): string =>
   typeof schema?.grain === 'string' && schema.grain.trim() ? schema.grain : 'row';
 
@@ -246,7 +248,11 @@ const explainer = createExplainer({
   provider: explanationEndpoint && explanationModel
     ? { name: process.env.EXPLANATION_PROVIDER_NAME ?? 'openai-compatible', model: explanationModel, endpoint: explanationEndpoint, apiKey: process.env.EXPLANATION_API_KEY }
     : undefined,
-  timeoutMs: Number(process.env.EXPLANATION_TIMEOUT_MS ?? 8000),
+  timeoutMs: (() => {
+    const value = Number(process.env.EXPLANATION_TIMEOUT_MS ?? 8000);
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`EXPLANATION_TIMEOUT_MS must be a positive number, got ${process.env.EXPLANATION_TIMEOUT_MS ?? ''}`);
+    return value;
+  })(),
 });
 const requestSessionToken = (request: IncomingMessage) => readCookie(request.headers.cookie, sessionCookie);
 
@@ -319,7 +325,9 @@ const server = createServer((request, response) => {
   const verifyMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/auth\/verify\?token=([^&]+)$/) : undefined;
   if (verifyMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
-    auth.verify(decodeURIComponent(verifyMatch[1])).then((result) => {
+    let token: string;
+    try { token = decodeURIComponent(verifyMatch[1]); } catch { json(response, 400, { error: 'invalid_token' }); return; }
+    auth.verify(token).then((result) => {
       if (!result) { json(response, 401, { error: 'invalid_or_expired_link' }); return; }
       const cookie = serializeSessionCookie(result.sessionToken, cookieSecure);
       // Browsers follow the link and land on the app; API clients ask for JSON.
@@ -374,7 +382,8 @@ const server = createServer((request, response) => {
   // here, so no handler passes it to Postgres and reports a cast error as an outage.
   const recordPath = request.url?.match(/^\/api\/v1\/(findings|evidence)\/([^/?#]+)/);
   if (recordPath) {
-    const id = decodeURIComponent(recordPath[2]);
+    let id: string;
+    try { id = decodeURIComponent(recordPath[2]); } catch { json(response, 404, { error: recordPath[1] === 'findings' ? 'finding_not_found' : 'evidence_not_found' }); return; }
     if (!recordId.test(id)) {
       json(response, 404, { error: recordPath[1] === 'findings' ? 'finding_not_found' : 'evidence_not_found' });
       return;
@@ -465,6 +474,7 @@ const server = createServer((request, response) => {
       const reason = validateRemovalReason(payload.reason);
       if ('error' in reason) { json(response, 400, { error: reason.error }); return; }
       // Only a moderator removes content, and only while it is still visible.
+      if (!recordId.test(removalMatch[1])) { json(response, 404, { error: 'comment_not_found' }); return; }
       const comment = await getComment(removalMatch[1]);
       if (!comment) { json(response, 404, { error: 'comment_not_found' }); return; }
       const removal = checkRemoval({ status: comment.status, role: user.role });
@@ -662,7 +672,7 @@ const server = createServer((request, response) => {
       try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
       const releaseIds = Array.isArray(payload.release_ids) ? payload.release_ids.filter((id): id is string => typeof id === 'string') : [];
       if (releaseIds.length < 1 || releaseIds.length > 2) { json(response, 400, { error: 'release_ids_required', message: 'a run analyses one release or joins exactly two' }); return; }
-      const rowsByRelease = await Promise.all(releaseIds.map(async (id) => ({ id, rows: await getReleaseRows(id, 50_000) })));
+      const rowsByRelease = await Promise.all(releaseIds.map(async (id) => ({ id, rows: await getReleaseRows(id, maxJoinedRows) })));
       for (const entry of rowsByRelease) {
         if (!entry.rows.length) { json(response, 400, { error: 'release_not_pinned', message: `release ${entry.id} has no stored rows; pin it first` }); return; }
       }
@@ -689,8 +699,8 @@ const server = createServer((request, response) => {
           leftKey: payload.left_key, rightKey: payload.right_key });
         if (!plan.ok) { json(response, 400, { error: plan.error, message: plan.message }); return; }
         const joined = executeJoin(plan.plan, left.rows, right.rows);
-        const limited = limitJoinedRows(joined.rows);
-        if (limited.rows.length !== joined.rows.length) { json(response, 413, { error: 'join_too_large', rows: joined.rows.length, limit: 50_000 }); return; }
+        const limited = limitJoinedRows(joined.rows, maxJoinedRows);
+        if (limited.truncated) { json(response, 413, { error: 'join_too_large', rows: joined.rows.length, limit: maxJoinedRows }); return; }
         rows = limited.rows;
         columns = joinedSchema(leftColumns, rightColumns, payload.left_key) as RecipeColumn[];
         joinPlan = { leftKey: payload.left_key, rightKey: payload.right_key, leftReleaseId: left.id, rightReleaseId: right.id,
@@ -701,8 +711,16 @@ const server = createServer((request, response) => {
       }
 
       const selection = selectInsights(columns);
-      const options = (payload.options && typeof payload.options === 'object' ? payload.options : {}) as RecipeOptions;
-      const runId = await insertRun({ connectorIds: [], releaseIds, filters: (payload.filters && typeof payload.filters === 'object' ? payload.filters : {}) as Record<string, unknown>, selection });
+      // Options steer a recipe, so they are narrowed to the keys it accepts rather than
+      // passed through whatever the client sent.
+      const rawOptions = (payload.options && typeof payload.options === 'object' ? payload.options : {}) as Record<string, unknown>;
+      const options: RecipeOptions = {};
+      if (typeof rawOptions.measure === 'string') options.measure = rawOptions.measure;
+      if (typeof rawOptions.field === 'string') options.field = rawOptions.field;
+      if (typeof rawOptions.top === 'number' && Number.isInteger(rawOptions.top) && rawOptions.top > 0) options.top = rawOptions.top;
+      if (typeof rawOptions.periodA === 'string' || typeof rawOptions.periodA === 'number') options.periodA = rawOptions.periodA;
+      if (typeof rawOptions.periodB === 'string' || typeof rawOptions.periodB === 'number') options.periodB = rawOptions.periodB;
+      const runId = await insertRun({ connectorIds: [], releaseIds, filters: (payload.filters && typeof payload.filters === 'object' && !Array.isArray(payload.filters) ? payload.filters : {}) as Record<string, unknown>, selection });
       const executed = runAllApplicable(selection, rows, columns, options);
       const insights = [];
       for (const result of executed.results) {
@@ -721,6 +739,7 @@ const server = createServer((request, response) => {
 
   const runMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/runs\/([^/]+)$/) : undefined;
   if (runMatch) {
+    if (!recordId.test(runMatch[1])) { json(response, 404, { error: 'run_not_found' }); return; }
     getRun(runMatch[1]).then((found) => found ? json(response, 200, found) : json(response, 404, { error: 'run_not_found' }))
       .catch(() => json(response, 503, { error: 'run_unavailable' }));
     return;
@@ -799,11 +818,10 @@ const server = createServer((request, response) => {
   if (request.method === 'GET' && request.url === '/api/v1/imports/drafts') {
     // Every draft is created as a private draft, so listing them is not a public read.
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
-    const drafts = listDraftReleases();
     auth.session(requestSessionToken(request)).then((user) => {
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       if (user.role !== 'reviewer' && user.role !== 'maintainer') { json(response, 403, { error: 'reviewer_required' }); return; }
-      json(response, 200, { releases: drafts.slice(0, 100) });
+      json(response, 200, { releases: listDraftReleases().slice(0, 100) });
     }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
     return;
   }
@@ -846,8 +864,10 @@ const server = createServer((request, response) => {
     // A draft has an owner, so anonymous uploads are refused before any body is read.
     auth.session(requestSessionToken(request)).then(async (user) => {
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
-      const filename = decodeURIComponent(registerMatch[1]);
-      const name = decodeURIComponent(registerMatch[2]);
+      let filename: string;
+      let name: string;
+      try { filename = decodeURIComponent(registerMatch[1]); name = decodeURIComponent(registerMatch[2]); }
+      catch { json(response, 400, { error: 'invalid_filename' }); return; }
       const release = uploads.tryAcquire();
       if (!release) { uploadBusy(response); return; }
       const incoming = await readBoundedBody(request, maxUploadBytes).finally(release);
@@ -939,7 +959,9 @@ const server = createServer((request, response) => {
       return workerFetch(`${workerUrl}/records`).then(async (workerResponse) => {
       if (!workerResponse.ok) { json(response, 503, { error: 'coverage_release_unavailable' }); return; }
       const rows = await workerResponse.json() as Array<{ DatasetReleaseID: string; FiscalYear: number; CoverageStatus: string; SourceRowCount: number; AmountPesos?: number; Scopes?: Record<string, unknown>; Notes: string[] }>;
-      const imported = await saveNormalizedCoverage(rows, catalog[0]);
+      const named = catalog.find((item) => item.id === 'bettergov-gaa-coverage-2026-11-07');
+      if (!named) { json(response, 503, { error: 'coverage_release_unavailable' }); return; }
+      const imported = await saveNormalizedCoverage(rows, named);
         json(response, 200, { dataset_release_id: 'bettergov-gaa-coverage-2026-11-07', imported_rows: imported, status: 'validated' });
       });
     }).catch((error) => { console.error(error); json(response, 503, { error: 'normalized_import_unavailable' }); });
@@ -1009,6 +1031,9 @@ const server = createServer((request, response) => {
       let payload: { relationship_id?: unknown };
       try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
       const relationshipId = typeof payload.relationship_id === 'string' ? payload.relationship_id : '11111111-2222-3333-4444-555555555555';
+      // The id goes straight into a uuid column, so a malformed one is rejected here
+      // rather than surfacing as a cast error reported as an outage.
+      if (!recordId.test(relationshipId)) { json(response, 400, { error: 'invalid_relationship_id' }); return; }
       const relationship = await getRelationship(relationshipId);
       if (!relationship) { json(response, 404, { error: 'relationship_not_found' }); return; }
       const planned = planJoin({ relationship: relationship as Relationship,
@@ -1037,7 +1062,7 @@ const server = createServer((request, response) => {
           recipeVersion: String(first.recipe_version ?? 'joined-v1'),
           filters: { relationship_id: relationship.id, related_release_id: relationship.relatedReleaseId, join_keys: planned.plan.joinKeys },
           result, inputRows: leftRows.length + rightRows.length, outputRows: matched,
-          releaseChecksum: catalog[0].checksum,
+          releaseChecksum: betterGovRelease.checksum,
           calculation: 'Equi-join on curated explicit keys with unmatched and duplicate-key diagnostics.',
           validation: { status: first.validation?.status ?? 'Not run', checks: [...(first.validation?.checks ?? []), 'deterministic rerun matched'] },
           warnings: [...(first.warnings ?? [])], limitations: [...(first.limitations ?? []), ...joinLimitations],
@@ -1104,7 +1129,7 @@ const server = createServer((request, response) => {
           recipe: String(result.recipe), recipeVersion: String(result.recipe_version),
           filters: (result.filters ?? {}) as Record<string, unknown>, result: result.result,
           inputRows: Number(result.input_rows ?? 0), outputRows: Number(result.output_rows ?? 0),
-          releaseChecksum: catalog[0].checksum, calculation: String(result.calculation ?? ''),
+          releaseChecksum: betterGovRelease.checksum, calculation: String(result.calculation ?? ''),
           validation: result.validation ?? { status: 'Not run', checks: [] },
           warnings: (result.warnings ?? []) as string[], limitations: (result.limitations ?? []) as string[],
           reproducibilityStatus: String(result.reproducibility_status),
@@ -1133,6 +1158,7 @@ const server = createServer((request, response) => {
       if (typeof payload.evidence_id !== 'string') { json(response, 400, { error: 'evidence_id_required' }); return; }
       const claim = validateClaim(payload.claim);
       if ('error' in claim) { json(response, 400, { error: claim.error }); return; }
+      if (!recordId.test(payload.evidence_id)) { json(response, 404, { error: 'evidence_not_found' }); return; }
       try {
         const evidence = await getEvidence(payload.evidence_id);
         if (!evidence) { json(response, 404, { error: 'evidence_not_found' }); return; }

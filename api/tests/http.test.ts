@@ -1381,3 +1381,69 @@ test('importing the coverage release is a maintainer write, not an anonymous one
   const maintainerAccount = await maintainer();
   assert.equal((await api('/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/import', { method: 'POST', cookie: maintainerAccount.cookie })).status, 200);
 });
+
+test('a malformed escape never crashes the API', async (t) => {
+  if (!ready(t)) return;
+  // These decode synchronously in the request listener; an uncaught URIError would exit.
+  for (const path of ['/api/v1/findings/%zz', '/api/v1/findings/%zz/page', '/api/v1/evidence/%zz/export.csv']) {
+    const response = await api(path);
+    assert.equal(response.status, 404, path);
+  }
+  assert.equal((await api('/api/v1/auth/verify?token=%zz')).status, 400);
+  // Register authenticates first, so the malformed filename is checked for a signed-in user.
+  const owner = await maintainer();
+  assert.equal((await api('/api/v1/imports/register?filename=%zz&name=ok', { method: 'POST', cookie: owner.cookie, body: 'a,b\n' })).status, 400);
+  // The process survived all of it.
+  assert.equal((await api('/health')).status, 200);
+});
+
+test('an id that cannot be a uuid is not found, not an outage', async (t) => {
+  if (!ready(t)) return;
+  assert.equal((await api('/api/v1/runs/garbage')).status, 404);
+  const account = await maintainer();
+  const badRelationship = await api('/api/v1/join/analyze', { method: 'POST', cookie: account.cookie, body: { relationship_id: 'garbage' } });
+  assert.equal(badRelationship.status, 400);
+  assert.equal((await responseJson<{ error: string }>(badRelationship)).error, 'invalid_relationship_id');
+});
+
+test('a submitted evidence id that is not a uuid is not found, not an outage', async (t) => {
+  if (!ready(t)) return;
+  const submitter = await signIn('bad-evidence-author');
+  const response = await api('/api/v1/findings', { method: 'POST', cookie: submitter.cookie, body: { evidence_id: 'not-a-uuid', claim: 'A claim long enough to pass validation.' } });
+  assert.equal(response.status, 404);
+  assert.equal((await responseJson<{ error: string }>(response)).error, 'evidence_not_found');
+});
+
+test('an oversized body is refused with 413 and the socket stays usable', async (t) => {
+  if (!ready(t)) return;
+  const big = 'x'.repeat(2 * 1024 * 1024);
+  const response = await api('/api/v1/analyze', { method: 'POST', body: { recipe: 'summary', padding: big } });
+  assert.equal(response.status, 413);
+  assert.equal((await api('/health')).status, 200);
+});
+
+test('a malformed comment id is not found, and an aborted upload releases its gate slot', async (t) => {
+  if (!ready(t)) return;
+  const moderator = await reviewer();
+  const removal = await api('/api/v1/comments/not-a-uuid/removal', { method: 'POST', cookie: moderator.cookie, body: { reason: 'spam' } });
+  assert.equal(removal.status, 404);
+  assert.equal((await responseJson<{ error: string }>(removal)).error, 'comment_not_found');
+
+  // Two aborted uploads would exhaust the gate of two and answer 429 forever if the
+  // body reader never settled. Send a partial body, then destroy the socket.
+  const { connect } = await import('node:net');
+  const url = new URL(baseUrl);
+  const abort = () => new Promise<void>((resolve) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      socket.write('POST /api/v1/imports/validate?filename=x.csv HTTP/1.1\r\nHost: x\r\nContent-Type: text/csv\r\nContent-Length: 5000\r\n\r\npartial');
+      setTimeout(() => { socket.destroy(); resolve(); }, 60);
+    });
+    socket.on('error', () => resolve());
+  });
+  await abort();
+  await abort();
+
+  const after = await api('/api/v1/imports/validate?filename=x.csv', { method: 'POST', body: 'a,b\n1,2\n' });
+  assert.notEqual(after.status, 429, 'an aborted upload must not hold the upload gate');
+  assert.equal((await api('/health')).status, 200);
+});

@@ -73,6 +73,45 @@ try {
   assert.ok(/synthetic/i.test(joinText ?? ''), 'join fixture is not labeled as synthetic');
   console.log('OK curated join runs and renders diagnostics with the synthetic-fixture warning');
 
+  // Charts: each recipe renders a figure, data points are focusable and labelled,
+  // and the trend breaks at the years with no GAA instead of drawing a zero.
+  async function runRecipe(recipe) {
+    await maintainerPage.locator('#recipe').selectOption(recipe);
+    await maintainerPage.getByRole('button', { name: 'Run analysis' }).click();
+    const figure = maintainerPage.locator('figure').first();
+    await figure.waitFor({ timeout: 20000 });
+    await maintainerPage.waitForTimeout(300);
+    return figure;
+  }
+
+  const rank = await runRecipe('rank');
+  const rankPoints = await rank.locator('[tabindex="0"][aria-label*="FY"]').count();
+  assert.ok(rankPoints >= 20, `rank chart has ${rankPoints} focusable points`);
+  const rankLabel = await rank.locator('[tabindex="0"][aria-label*="FY"]').first().getAttribute('aria-label');
+  assert.ok(/FY\d{4}/.test(rankLabel ?? '') && /₱|PHP/.test(rankLabel ?? ''), `rank point label: ${rankLabel}`);
+  console.log(`OK rank chart renders ${rankPoints} focusable labelled bars`);
+
+  const trend = await runRecipe('change_over_time');
+  const trendLabel = await trend.locator('[tabindex="0"][aria-label*="FY"]').first().getAttribute('aria-label');
+  assert.ok(/FY\d{4}/.test(trendLabel ?? ''), `trend point label: ${trendLabel}`);
+  const trendText = await trend.textContent();
+  assert.ok(!/FY2022\s*·?\s*₱0/.test(trendText ?? ''), 'a gap year was drawn as zero');
+  console.log('OK trend chart exposes labelled points and does not zero the gap years');
+
+  const distribution = await runRecipe('distribution');
+  const distributionText = await distribution.textContent();
+  assert.ok(/percentage|%/i.test(distributionText ?? ''), 'distribution chart hides percentages');
+  console.log('OK distribution chart states percentages');
+
+  const compare = await runRecipe('compare');
+  const compareText = await compare.textContent();
+  assert.ok(/FY\d{4}/.test(compareText ?? '') && /%/.test(compareText ?? ''), 'compare chart misses its years or percent change');
+  console.log('OK compare chart states both years and the percent change');
+
+  const rawJson = maintainerPage.getByText('Raw result JSON');
+  await rawJson.waitFor();
+  console.log('OK raw JSON sits behind a disclosure');
+
   const analysis = await ok('/api/v1/analyze', undefined, { method: 'POST', body: JSON.stringify({ datasetReleaseId: release, recipe: 'summary' }) });
   const finding = await ok('/api/v1/findings', submitterSession, { method: 'POST', body: JSON.stringify({ evidence_id: analysis.evidence_id }) });
   assert.ok(finding.id, `finding response: ${JSON.stringify(finding)}`);

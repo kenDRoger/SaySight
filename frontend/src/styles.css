@@ -56,3 +56,14 @@ th, td { text-align: left; vertical-align: top; padding: 0.4rem 0.5rem; border-b
 .guide a { font-weight: 650; }
 .guide .muted { margin: .75rem 0 0; }
 .badge { display: inline-block; margin-left: .5rem; padding: .1rem .45rem; font-size: .75rem; font-weight: 700; letter-spacing: .02em; color: #5a3e00; background: #f6e6bf; border-radius: 999px; vertical-align: middle; }
+
+.chart-figure { box-sizing: border-box; max-width: 100%; min-width: 0; margin: 1rem 0 1.5rem; }
+.chart-container { box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; overflow: visible; }
+.chart-container--rank { height: 540px; }
+.chart-container--trend { height: 360px; }
+.chart-container--distribution { height: 280px; }
+.chart-container--compare { height: 320px; }
+.chart-figure svg { overflow: visible; }
+.chart-figure figcaption { margin-top: .75rem; font-size: .9rem; line-height: 1.45; overflow-wrap: anywhere; }
+.chart-figure .chart-note { display: block; margin-top: .35rem; color: #53636e; }
+.chart-figure rect:focus-visible, .chart-figure circle:focus-visible { outline: none; stroke: #17212b; stroke-width: 3px; }

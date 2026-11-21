@@ -4,6 +4,7 @@ import { Button } from '@bettergov/kapwa/button';
 import { Card } from '@bettergov/kapwa/card';
 import { Input } from '@bettergov/kapwa/input';
 import { Label } from '@bettergov/kapwa/label';
+import { CompareChart, DistributionChart, RankChart, TrendChart, isCompareResult, isDistributionResult, isRankResult, isTrendResult } from './charts';
 import './styles.css';
 
 type Dataset = {
@@ -151,7 +152,7 @@ function App() {
   const agencyName = (id: string | null | undefined) => agencies.find((item) => item.id === id)?.name ?? id ?? 'Unlisted agency';
 
   useEffect(() => {
-    fetch(`${apiBase}/api/v1/datasets`).then((response) => response.json()).then((body) => {
+    fetch(`${apiBase}/api/v1/datasets`).then((response) => response.json()).then((body: { datasets?: Dataset[] }) => {
       const list = body.datasets ?? [];
       setReleases(list);
       // The catalog is alphabetical, which would put a test fixture first. Feature the
@@ -170,7 +171,7 @@ function App() {
     else if (year) params.set('year', year);
     if (status) params.set('status', status);
     const query = params.toString() ? `?${params}` : '';
-    fetch(`${apiBase}/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/preview${query}`).then((response) => { if (!response.ok) throw new Error('Preview unavailable'); return response.json(); }).then((body) => { setMatchingRows(body.matching_rows); setPreviewError(''); }).catch(() => { setMatchingRows(undefined); setPreviewError('Matching-row preview is unavailable.'); });
+    fetch(`${apiBase}/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/preview${query}`).then((response) => { if (!response.ok) throw new Error('Preview unavailable'); return response.json(); }).then((body: { matching_rows?: number }) => { setMatchingRows(body.matching_rows); setPreviewError(''); }).catch(() => { setMatchingRows(undefined); setPreviewError('Matching-row preview is unavailable.'); });
   }, [year, status, recipe, compareYears]);
 
   useEffect(() => {
@@ -382,7 +383,8 @@ function App() {
     event.preventDefault(); setLoading(true); setError(''); setAnalysis(undefined); setValidationFailure(undefined);
     try {
       const response = await fetch(`${apiBase}/api/v1/analyze`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ recipe, ...(recipe === 'compare' ? { compare_years: compareYears.map(Number) } : year ? { year: Number(year) } : {}), ...(status ? { status } : {}) }) });
-      const body = await response.json();
+      // The error shape carries validation details the success body does not.
+      const body = await response.json() as Analysis & { error?: string; validation?: { status: string; checks: string[] }; reproducibility_status?: string };
       if (!response.ok) { if (body.validation) setValidationFailure({ ...body.validation, reproducibility_status: body.reproducibility_status }); throw new Error(body.error ?? 'Analysis failed.'); }
       setAnalysis(body);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Analysis failed.'); }
@@ -459,7 +461,7 @@ function App() {
         <Button type="submit" variant="primary" size="md" isLoading={loading} disabled={loading}>{loading ? 'Running…' : 'Run analysis'}</Button>
       </form>
       {error && <p role="alert" className="error">{error}</p>}{validationFailure && <div role="status"><p>Validation: <strong>{validationFailure.status}</strong>{validationFailure.reproducibility_status && <> · Reproducibility: <strong>{validationFailure.reproducibility_status}</strong></>}</p><ul>{validationFailure.checks.map((check) => <li key={check}>{check}</li>)}</ul></div>}
-      {analysis && <div className="result" aria-live="polite"><h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><pre>{JSON.stringify(analysis.result, null, 2)}</pre>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
+      {analysis && <div className="result" aria-live="polite">{analysis.recipe === 'rank' && isRankResult(analysis.result) && <RankChart rows={analysis.result} />}{analysis.recipe === 'change_over_time' && isTrendResult(analysis.result) && <TrendChart rows={analysis.result} />}{analysis.recipe === 'distribution' && isDistributionResult(analysis.result) && <DistributionChart result={analysis.result} />}{analysis.recipe === 'compare' && isCompareResult(analysis.result) && <CompareChart result={analysis.result} />}<h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><details><summary>Raw result JSON</summary><pre>{JSON.stringify(analysis.result, null, 2)}</pre></details>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
       </Card>
     </section>
     <section aria-labelledby="join-heading">

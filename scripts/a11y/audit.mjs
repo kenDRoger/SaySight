@@ -6,8 +6,10 @@
 //
 // The audit signs itself in through the magic-link flow (log-only mail transport)
 // unless AUDIT_SESSION supplies a saysight_session value directly. It creates one
-// analysis and one Unverified finding so the public finding page can be audited;
-// that evidence is append-only and stays in the database.
+// analysis and one finding moved to Pending verification so both the public page
+// and the reviewer queue have content. A second account is promoted to reviewer
+// with the same operator script the verification suites use. That evidence is
+// append-only and stays in the database.
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,7 +62,7 @@ export async function obtainSession(email = `a11y-${Date.now()}@example.org`) {
   throw new Error(`could not obtain a fresh magic-link session for ${email}`);
 }
 
-async function createFixture(sessionCookie) {
+async function createFixture(submitterCookie, reviewerCookie) {
   const analysis = await fetch(`${api}/api/v1/analyze`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -70,36 +72,75 @@ async function createFixture(sessionCookie) {
   const { evidence_id: evidenceId } = await analysis.json();
   const finding = await fetch(`${api}/api/v1/findings`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', cookie: sessionCookie },
-    body: JSON.stringify({ evidence_id: evidenceId }),
+    headers: { 'content-type': 'application/json', cookie: submitterCookie },
+    body: JSON.stringify({ evidence_id: evidenceId, claim: 'The analyzed GAA coverage matches the published release' }),
   });
   if (!finding.ok) throw new Error(`finding for the audit failed: ${finding.status}`);
   const { id } = await finding.json();
-  return `${api}/api/v1/findings/${id}/page`;
+  const decision = await fetch(`${api}/api/v1/findings/${id}/decisions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: reviewerCookie },
+    body: JSON.stringify({ status: 'Pending verification', reason: 'a11y audit fixture' }),
+  });
+  if (!decision.ok) throw new Error(`review decision for the audit failed: ${decision.status}`);
+  return { page: `${api}/api/v1/findings/${id}/page`, id };
 }
 
 async function runAudit() {
-  const session = process.env.AUDIT_SESSION ?? await obtainSession();
+  const reviewerEmail = `a11y-reviewer-${Date.now()}@example.org`;
+  const session = process.env.AUDIT_SESSION ?? await obtainSession(reviewerEmail);
+  if (!process.env.AUDIT_SESSION) {
+    execFileSync('docker', ['compose', '-f', composeFile, 'exec', '-T', 'api',
+      'node', 'scripts/promote.mjs', reviewerEmail, 'reviewer'], { encoding: 'utf8', timeout: 10_000 });
+  }
+  const submitter = await obtainSession(`a11y-submitter-${Date.now()}@example.org`);
   const browser = await chromium.launch({
     ...(process.env.BROWSER_PATH ? { executablePath: process.env.BROWSER_PATH } : {}),
     args: ['--no-sandbox'],
   });
-  const findingPage = await createFixture(`saysight_session=${session}`);
+  const finding = await createFixture(`saysight_session=${submitter}`, `saysight_session=${session}`);
+  const reviewerViews = [
+    ['review queue', '[aria-labelledby="queue-heading"]'],
+    ['saved views', '[aria-labelledby="views-heading"]'],
+    ['upload', '[aria-labelledby="upload-heading"]'],
+    ['curated join', '[aria-labelledby="join-heading"]'],
+  ];
   const results = [];
+  const tags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
 
   for (const width of widths) {
-    for (const [name, url] of [['catalog/analysis', app], ['public finding', findingPage]]) {
+    for (const [name, url] of [['catalog/analysis', app], ['public finding', finding.page]]) {
       const context = await browser.newContext({ viewport: { width, height: 900 } });
       const page = await context.newPage();
       await page.goto(url, { waitUntil: 'networkidle' });
       await page.evaluate(() => document.querySelectorAll('details').forEach((node) => (node.open = true)));
       const { violations } = await new AxeBuilder({ page })
-        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+        .withTags(tags)
         .analyze();
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       results.push({ name, width, violations: violations.map((item) => `${item.id} (${item.nodes.length})`), overflow });
       await context.close();
     }
+
+    const context = await browser.newContext({ viewport: { width, height: 900 } });
+    await context.addCookies([{ name: 'saysight_session', value: session, url: app }]);
+    const page = await context.newPage();
+    await page.goto(app, { waitUntil: 'networkidle' });
+    const signedIn = page.getByRole('status').filter({ hasText: 'Signed in as' });
+    await signedIn.waitFor();
+    const queue = page.getByRole('region', { name: 'Review queue' });
+    await queue.getByText(finding.id).first().waitFor({ timeout: 10_000 });
+    await page.evaluate(() => document.querySelectorAll('details').forEach((node) => (node.open = true)));
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    for (const [name, selector] of reviewerViews) {
+      await page.locator(selector).waitFor();
+      const { violations } = await new AxeBuilder({ page })
+        .include(selector)
+        .withTags(tags)
+        .analyze();
+      results.push({ name, width, violations: violations.map((item) => `${item.id} (${item.nodes.length})`), overflow });
+    }
+    await context.close();
   }
 
   await browser.close();

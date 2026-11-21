@@ -63,3 +63,26 @@ test('the provider sees only the bounded structured result', async () => {
   assert.match(prompt, /"input_rows":27/);
   assert.ok(prompt.length < 20000);
 });
+
+test('generated text that states a figure the evidence does not contain is rejected', async () => {
+  const check = async (content: string) => {
+    const explainer = createExplainer({
+      provider: { name: 'test', endpoint: 'https://example.test/v1', model: 'm' },
+      request: async () => new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 }),
+    });
+    return explainer.explain(evidence);
+  };
+
+  // 27 rows and 2024 are in the evidence; 999 is invented.
+  const supported = await check('The release covers 27 rows for 2024.');
+  assert.equal(supported.source, 'llm');
+  assert.equal(supported.text, 'The release covers 27 rows for 2024.');
+
+  const invented = await check('The release covers 999 rows for 2024.');
+  assert.equal(invented.source, 'template', 'an unsupported figure must fall back to the deterministic template');
+  assert.ok(!invented.text.includes('999'), invented.text);
+
+  // A rounded form of a known figure is still grounded.
+  const rounded = await check('The release covers 27 rows.');
+  assert.equal(rounded.source, 'llm');
+});

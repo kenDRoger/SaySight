@@ -63,6 +63,51 @@ const buildPrompt = (evidence: EvidenceForExplanation) =>
 
 export const providerPromptLimit = 20000;
 
+// concept.md: generated text is checked against the structured result, and unsupported
+// text is rejected in favour of deterministic wording. A figure the evidence does not
+// contain is exactly the failure this guard exists for.
+const numericStrings = (value: unknown, out = new Set<string>()): Set<string> => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    for (const decimals of [0, 1, 2]) {
+      out.add(value.toFixed(decimals));
+      out.add(value.toFixed(decimals).replace(/\.0+$/, ''));
+    }
+    out.add(String(value));
+    out.add(value.toLocaleString('en-US'));
+    return out;
+  }
+  if (typeof value === 'string') {
+    // A period label such as FY2024 or 2024-2025 legitimately carries a figure.
+    for (const token of value.match(/-?\d[\d,]*(?:\.\d+)?/g) ?? []) out.add(token.replace(/,/g, ''));
+    return out;
+  }
+  if (Array.isArray(value)) { for (const item of value) numericStrings(item, out); return out; }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value as Record<string, unknown>)) numericStrings(item, out);
+  }
+  return out;
+};
+
+const templateNumber = (known: Set<string>, token: string): boolean => {
+  const normalized = token.replace(/,/g, '');
+  if (known.has(normalized) || known.has(token)) return true;
+  const asNumber = Number(normalized);
+  if (!Number.isFinite(asNumber)) return false;
+  // Accept a stated figure that is a rounding of a known one.
+  return [...known].some((candidate) => {
+    const value = Number(candidate);
+    return Number.isFinite(value) && Math.abs(value - asNumber) < 0.5;
+  });
+};
+
+const groundedIn = (text: string, evidence: EvidenceForExplanation): boolean => {
+  const known = numericStrings(evidence);
+  for (const token of text.match(/-?\d[\d,]*(?:\.\d+)?/g) ?? []) {
+    if (!templateNumber(known, token)) return false;
+  }
+  return true;
+};
+
 function sanitize(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const text = value.replace(/\s+/g, ' ').trim();
@@ -100,6 +145,7 @@ export function createExplainer(options: {
         const raw = payload.choices?.[0]?.message?.content ?? payload.content;
         const text = sanitize(raw);
         if (!text) return fallback(evidence);
+        if (!groundedIn(text, evidence)) return fallback(evidence);
         return { text, source: 'llm', provider: provider.name, model: provider.model, templateVersion };
       } catch {
         // Network error, timeout, or malformed JSON all end the same way.

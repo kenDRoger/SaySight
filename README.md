@@ -226,3 +226,18 @@ one. Evidence exposes counts and the explicit keys, not raw joined rows.
 owner's source-of-truth documents and are intentionally kept outside this
 repository. This README is the repository-facing operating guide; there is no
 `docs/` tree because the owner keeps a separate backup of design documents.
+
+## Demo mode (local only, not for deployment)
+
+To move between submitter, reviewer, and maintainer without the email round trip:
+
+```bash
+SAYSIGHT_DEMO_ROLES=1 docker compose up -d api
+```
+
+Switch roles from the top bar. The badge reads **Demo mode**, and the same
+authorization rules apply as in the real flow — you still cannot review your own
+finding, and a high-impact finding still needs a second reviewer.
+
+This grants maintainer access to anyone who can reach the API. It is off by default and
+must never be deployed enabled; see `architecture.md` for the exact removal steps.

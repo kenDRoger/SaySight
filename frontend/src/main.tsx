@@ -38,7 +38,7 @@ type JoinedAnalysis = {
   finding_id?: string;
 };
 type User = { id: string; email: string; role: 'submitter' | 'reviewer' | 'maintainer' };
-type Finding = { id: string; status: string; impact: string };
+type Finding = { id: string; status: string; impact: string; claim?: string | null };
 type Transition = { fromStatus: string; toStatus: string; reason: string; createdAt: string };
 type FindingComment = { id: string; body: string; status: 'visible' | 'removed'; removalReason: string | null; createdAt: string };
 type Explanation = { id: string; text: string; source: 'llm' | 'template'; provider: string | null; model: string | null; templateVersion: string };
@@ -109,6 +109,7 @@ function App() {
   const [joining, setJoining] = useState(false);
   const [finding, setFinding] = useState<Finding>();
   const [findingError, setFindingError] = useState('');
+  const [claim, setClaim] = useState('');
   const [user, setUser] = useState<User>();
   const [sessionReady, setSessionReady] = useState(false);
   const [email, setEmail] = useState('');
@@ -244,7 +245,7 @@ function App() {
     if (!analysis?.evidence_id) return;
     setLoading(true); setFindingError('');
     try {
-      const created = await apiRequest<Finding>('/api/v1/findings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ evidence_id: analysis.evidence_id }) });
+      const created = await apiRequest<Finding>('/api/v1/findings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ evidence_id: analysis.evidence_id, claim }) });
       setFinding(created);
       await loadFinding(created.id);
     } catch (reason) {
@@ -461,7 +462,7 @@ function App() {
         <Button type="submit" variant="primary" size="md" isLoading={loading} disabled={loading}>{loading ? 'Running…' : 'Run analysis'}</Button>
       </form>
       {error && <p role="alert" className="error">{error}</p>}{validationFailure && <div role="status"><p>Validation: <strong>{validationFailure.status}</strong>{validationFailure.reproducibility_status && <> · Reproducibility: <strong>{validationFailure.reproducibility_status}</strong></>}</p><ul>{validationFailure.checks.map((check) => <li key={check}>{check}</li>)}</ul></div>}
-      {analysis && <div className="result" aria-live="polite">{analysis.recipe === 'rank' && isRankResult(analysis.result) && <RankChart rows={analysis.result} />}{analysis.recipe === 'change_over_time' && isTrendResult(analysis.result) && <TrendChart rows={analysis.result} />}{analysis.recipe === 'distribution' && isDistributionResult(analysis.result) && <DistributionChart result={analysis.result} />}{analysis.recipe === 'compare' && isCompareResult(analysis.result) && <CompareChart result={analysis.result} />}<h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><details><summary>Raw result JSON</summary><pre>{JSON.stringify(analysis.result, null, 2)}</pre></details>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
+      {analysis && <div className="result" aria-live="polite">{analysis.recipe === 'rank' && isRankResult(analysis.result) && <RankChart rows={analysis.result} />}{analysis.recipe === 'change_over_time' && isTrendResult(analysis.result) && <TrendChart rows={analysis.result} />}{analysis.recipe === 'distribution' && isDistributionResult(analysis.result) && <DistributionChart result={analysis.result} />}{analysis.recipe === 'compare' && isCompareResult(analysis.result) && <CompareChart result={analysis.result} />}<h3>Result</h3><p>Recipe: <strong>{analysis.recipe}</strong> · Reproducibility: <strong>{analysis.reproducibility_status}</strong> · Validation: <strong>{analysis.validation.status}</strong></p><p>{analysis.input_rows} input rows → {analysis.output_rows} output rows</p><p><strong>Calculation:</strong> {analysis.calculation}</p><details><summary>Raw result JSON</summary><pre>{JSON.stringify(analysis.result, null, 2)}</pre></details>{analysis.warnings.length > 0 && <><h4>Warnings</h4><ul>{analysis.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}{analysis.limitations.map((item) => <p className="muted" key={item}>{item}</p>)}{analysis.evidence_id && <div className="form-field"><Label htmlFor="finding-claim">Claim</Label><textarea id="finding-claim" required minLength={20} maxLength={1000} value={claim} onChange={(event) => setClaim(event.target.value)} placeholder="State what a reviewer should verify about this result." /></div>}{analysis.evidence_id && <Button type="button" variant="outline" size="md" onClick={saveFinding} disabled={loading}>Save as Unverified finding</Button>}{findingError && <p role="alert" className="error">{findingError}</p>}{finding && <p className="muted">Finding <a href={`${apiBase}/api/v1/findings/${finding.id}/page`}>{finding.id}</a> is <strong>{finding.status}</strong> with <strong>{finding.impact}</strong> impact.</p>}</div>}
       </Card>
     </section>
     <section aria-labelledby="join-heading">
@@ -580,6 +581,7 @@ function App() {
       {detailError && <p role="alert" className="error">{detailError}</p>}
       {selected && <>
         <p>Status: <strong>{selected.status}</strong> · Impact: <strong>{selected.impact}</strong></p>
+        {selected.claim && <p><strong>Claim:</strong> {selected.claim}</p>}
         <h3>Explanation</h3>
         {explanation ? <>
           <p className="explanation-text">{explanation.text}</p>

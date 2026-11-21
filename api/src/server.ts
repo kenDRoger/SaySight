@@ -10,6 +10,7 @@ import { checkRows, checkUpload, type QuarantineReason } from './uploadPolicy.js
 import { validateMetadata, type PublicationMetadata } from './metadata.js';
 import { joinLimitations, planJoin, type Relationship } from './join.js';
 import { checkTransition, decisionStatuses, isStatus, reviewQueueStatuses, validateReason } from './review.js';
+import { validateClaim } from './claim.js';
 import { checkImpactGate, conflictRecord, deriveImpact, isImpact, type Impact } from './impact.js';
 import { clearSessionCookie, createAuth, defaultTransport, readCookie, serializeSessionCookie, sessionCookie } from './auth.js';
 import { createPgAuthStore } from './authpg.js';
@@ -666,14 +667,16 @@ const server = createServer((request, response) => {
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       try {
-        const payload = JSON.parse(incoming.data.toString('utf8')) as { evidence_id?: unknown };
+        const payload = JSON.parse(incoming.data.toString('utf8')) as { evidence_id?: unknown; claim?: unknown };
         if (typeof payload.evidence_id !== 'string') { json(response, 400, { error: 'evidence_id_required' }); return; }
+        const claim = validateClaim(payload.claim);
+        if ('error' in claim) { json(response, 400, { error: claim.error }); return; }
         const evidence = await getEvidence(payload.evidence_id);
         if (!evidence) { json(response, 404, { error: 'evidence_not_found' }); return; }
         // Impact is derived from the evidence, never chosen by the submitter.
         const release = catalog.find((item) => item.id === evidence.datasetReleaseId);
         const impact = deriveImpact({ filters: evidence.filters, totalYears: release?.coverage.fiscalYears.length ?? 0 });
-        json(response, 201, await createFinding(evidence.id, user.id, impact));
+        json(response, 201, await createFinding(evidence.id, user.id, impact, claim.claim));
       } catch { json(response, 400, { error: 'invalid_json' }); }
     });
     return;
@@ -694,7 +697,7 @@ const server = createServer((request, response) => {
       const explanationSection = explanation
         ? `<section aria-labelledby="explanation-heading"><h2 id="explanation-heading">Explanation</h2><p>${escapeHtml(explanation.text)}</p><p><small>${explanation.source === 'llm' ? `From a model (${escapeHtml(explanation.provider ?? 'unknown')} / ${escapeHtml(explanation.model ?? 'unknown')})` : 'From the deterministic template'}, template version ${escapeHtml(explanation.templateVersion)}.</small></p></section>`
         : '';
-      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong> · Review depth: ${escapeHtml(finding.impact)}</p>${conflicts.length ? `<p><strong>Reviewers disagreed</strong>: ${conflicts.map((conflict) => escapeHtml(conflict.statuses.join(' vs '))).join('; ')} — both positions are recorded in the history.</p>` : ''}${transitions.length ? `<section aria-labelledby="history-heading"><h2 id="history-heading">Review history</h2><ol>${transitions.map((transition) => `<li><strong>${escapeHtml(transition.toStatus)}</strong> — ${escapeHtml(transition.reason)} <small>(${escapeHtml(transition.createdAt)})</small></li>`).join('')}</ol></section>` : ''}<p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}${explanationSection}<section aria-labelledby="comments-heading"><h2 id="comments-heading">Comments</h2>${comments.length ? `<ol>${comments.map((comment) => comment.status === 'removed'
+      response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unverified finding · Saysight</title><style>body{margin:0 auto;max-width:60rem;padding:1rem;font:16px/1.5 system-ui,sans-serif;color-scheme:light dark}pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}dd{margin:0 0 .75rem}a{overflow-wrap:anywhere}</style></head><body><main><h1>Unverified finding</h1><p>This is an analysis candidate; it has not been human-reviewed.</p><p>Status: <strong>${escapeHtml(finding.status)}</strong> · Review depth: ${escapeHtml(finding.impact)}</p>${finding.claim ? `<p><strong>Claim:</strong> ${escapeHtml(finding.claim)}</p>` : ''}${conflicts.length ? `<p><strong>Reviewers disagreed</strong>: ${conflicts.map((conflict) => escapeHtml(conflict.statuses.join(' vs '))).join('; ')} — both positions are recorded in the history.</p>` : ''}${transitions.length ? `<section aria-labelledby="history-heading"><h2 id="history-heading">Review history</h2><ol>${transitions.map((transition) => `<li><strong>${escapeHtml(transition.toStatus)}</strong> — ${escapeHtml(transition.reason)} <small>(${escapeHtml(transition.createdAt)})</small></li>`).join('')}</ol></section>` : ''}<p>Finding ID: <code>${escapeHtml(finding.id)}</code></p><p><a href="/api/v1/evidence/${encodeURIComponent(finding.evidenceId)}">View evidence JSON</a></p>${details}${explanationSection}<section aria-labelledby="comments-heading"><h2 id="comments-heading">Comments</h2>${comments.length ? `<ol>${comments.map((comment) => comment.status === 'removed'
         ? `<li><em>Comment removed by a moderator</em>${comment.removalReason ? ` — ${escapeHtml(comment.removalReason)}` : ''}</li>`
         : `<li>${escapeHtml(comment.body)} <small>(${escapeHtml(comment.createdAt)})</small></li>`).join('')}</ol>` : '<p>No comments yet.</p>'}</section></main></body></html>`);
     }).catch(() => { response.writeHead(503); response.end('Finding page unavailable'); });

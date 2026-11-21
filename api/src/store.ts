@@ -25,7 +25,7 @@ export type Evidence = {
 // Accounts require durable storage, so the pool is shared with the auth layer.
 export const pool: Pool | undefined = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : undefined;
 const memory = new Map<string, Evidence>();
-type Finding = { id: string; evidenceId: string; status: string; impact: string; submittedBy: string | null; createdAt: string };
+type Finding = { id: string; evidenceId: string; status: string; impact: string; claim: string | null; submittedBy: string | null; createdAt: string };
 const findings = new Map<string, Finding>();
 const draftReleases = new Map<string, { id: string; name: string; filename: string; checksum: string; status: DraftStatus; createdAt: string }>();
 
@@ -296,21 +296,21 @@ export async function saveJoinedRun(input: {
   return evidence;
 }
 
-export async function createFinding(evidenceId: string, submittedBy: string, impact: string): Promise<Finding> {
-  const finding: Finding = { id: randomUUID(), evidenceId, status: 'Unverified', impact, submittedBy, createdAt: new Date().toISOString() };
+export async function createFinding(evidenceId: string, submittedBy: string, impact: string, claim: string): Promise<Finding> {
+  const finding: Finding = { id: randomUUID(), evidenceId, status: 'Unverified', impact, claim, submittedBy, createdAt: new Date().toISOString() };
   // Only the database-less development fallback keeps findings in memory; with a
   // pool, PostgreSQL is the single source of truth and a local copy would go stale.
   if (!pool) findings.set(finding.id, finding);
-  if (pool) await pool.query('INSERT INTO findings (id, analysis_run_id, status, submitted_by, impact) VALUES ($1, $2, $3, $4, $5)',
-    [finding.id, evidenceId, finding.status, submittedBy, impact]);
+  if (pool) await pool.query('INSERT INTO findings (id, analysis_run_id, status, submitted_by, impact, claim) VALUES ($1, $2, $3, $4, $5, $6)',
+    [finding.id, evidenceId, finding.status, submittedBy, impact, claim]);
   return finding;
 }
 
 export async function getFinding(id: string): Promise<Finding | undefined> {
   if (!pool) return findings.get(id);
-  const result = await pool.query('SELECT id, analysis_run_id, status, impact, submitted_by, created_at FROM findings WHERE id = $1', [id]);
+  const result = await pool.query('SELECT id, analysis_run_id, status, impact, claim, submitted_by, created_at FROM findings WHERE id = $1', [id]);
   const row = result.rows[0];
-  return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
+  return row ? { id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact, claim: row.claim, submittedBy: row.submitted_by, createdAt: row.created_at.toISOString() } : undefined;
 }
 
 export type ExplanationRecord = { id: string; findingId: string; text: string; source: 'llm' | 'template'; provider: string | null; model: string | null; templateVersion: string; createdAt: string };
@@ -434,12 +434,12 @@ export async function listConflicts(findingId: string): Promise<Array<{ id: stri
 export async function listReviewQueue(statuses: string[]): Promise<Array<Finding & { authorRole: string | null; authorEmail: string | null }>> {
   if (!pool) return [];
   const result = await pool.query(
-    `SELECT f.id, f.analysis_run_id, f.status, f.impact, f.submitted_by, f.created_at, u.role AS author_role, u.email AS author_email
+    `SELECT f.id, f.analysis_run_id, f.status, f.impact, f.claim, f.submitted_by, f.created_at, u.role AS author_role, u.email AS author_email
      FROM findings f LEFT JOIN users u ON u.id = f.submitted_by
      WHERE f.status = ANY($1) ORDER BY f.created_at`,
     [statuses],
   );
-  return result.rows.map((row) => ({ id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact, submittedBy: row.submitted_by,
+  return result.rows.map((row) => ({ id: row.id, evidenceId: row.analysis_run_id, status: row.status, impact: row.impact, claim: row.claim, submittedBy: row.submitted_by,
     createdAt: row.created_at.toISOString(), authorRole: row.author_role ?? null, authorEmail: row.author_email ?? null }));
 }
 

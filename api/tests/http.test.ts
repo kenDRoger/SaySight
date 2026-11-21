@@ -23,7 +23,7 @@ let evidenceId: string | undefined;
 type ApiOptions = { cookie?: string; method?: string; body?: unknown; accept?: string };
 type User = { id: string; email: string; role: string };
 type Account = { email: string; cookie: string; user: User };
-type Finding = { id: string; evidenceId: string; status: string; impact: string; submittedBy: string | null };
+type Finding = { id: string; evidenceId: string; status: string; impact: string; claim: string | null; submittedBy: string | null };
 
 const uniqueEmail = (label: string) => `${label}-${randomUUID()}@example.test`;
 
@@ -153,9 +153,11 @@ async function reviewer(): Promise<Account> {
   return account;
 }
 
+const findingClaim = 'FY2024 appropriations match the published release for this scope';
+
 async function submitFinding(cookie: string): Promise<Finding> {
   assert.ok(evidenceId, 'evidence must come from POST /api/v1/analyze');
-  const response = await api('/api/v1/findings', { method: 'POST', cookie, body: { evidence_id: evidenceId } });
+  const response = await api('/api/v1/findings', { method: 'POST', cookie, body: { evidence_id: evidenceId, claim: findingClaim } });
   const text = await responseText(response);
   assert.equal(response.status, 201, text);
   return JSON.parse(text) as Finding;
@@ -298,8 +300,48 @@ test('an authenticated submission creates an Unverified finding with derived imp
   const finding = await submitFinding(account.cookie);
   assert.equal(finding.status, 'Unverified');
   assert.equal(finding.impact, 'low'); // a one-year summary filter is the narrowest derived impact
+  assert.equal(finding.claim, findingClaim);
   assert.equal(finding.submittedBy, account.user.id);
   assert.ok(finding.id);
+});
+
+test('a submission without a claim is refused with 400 claim_required', async (t) => {
+  if (!ready(t, true)) return;
+  const account = await signIn('claim-missing');
+  const response = await api('/api/v1/findings', { method: 'POST', cookie: account.cookie, body: { evidence_id: evidenceId } });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'claim_required' });
+});
+
+test('a claim shorter than 20 characters is refused with 400 claim_too_short', async (t) => {
+  if (!ready(t, true)) return;
+  const account = await signIn('claim-short');
+  const response = await api('/api/v1/findings', { method: 'POST', cookie: account.cookie, body: { evidence_id: evidenceId, claim: 'too short' } });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'claim_too_short' });
+});
+
+test('a claim longer than 1000 characters is refused with 400 claim_too_long', async (t) => {
+  if (!ready(t, true)) return;
+  const account = await signIn('claim-long');
+  const response = await api('/api/v1/findings', { method: 'POST', cookie: account.cookie, body: { evidence_id: evidenceId, claim: 'x'.repeat(1001) } });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await responseJson<unknown>(response), { error: 'claim_too_long' });
+});
+
+test('the public finding page shows the claim escaped directly under the status line', async (t) => {
+  if (!ready(t, true)) return;
+  const account = await signIn('claim-page');
+  const claim = '<b>FY2024 appropriations match the published release for this scope</b>';
+  const created = await api('/api/v1/findings', { method: 'POST', cookie: account.cookie, body: { evidence_id: evidenceId, claim } });
+  const createdText = await responseText(created);
+  assert.equal(created.status, 201, createdText);
+  const finding = JSON.parse(createdText) as Finding;
+  const page = await api(`/api/v1/findings/${finding.id}/page`);
+  const html = await responseText(page);
+  assert.equal(page.status, 200, html);
+  assert.ok(html.includes(`</p><p><strong>Claim:</strong> &lt;b&gt;FY2024 appropriations match the published release for this scope&lt;/b&gt;</p>`));
+  assert.ok(!html.includes('<b>FY2024 appropriations'));
 });
 
 // Review queue, decisions, and history.

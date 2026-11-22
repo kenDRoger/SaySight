@@ -205,6 +205,19 @@ function withoutBody(request: IncomingMessage, response: ServerResponse, run: ()
   }).catch(() => json(response, 400, { error: 'invalid_request_body' }));
 }
 
+// The worker answers some import failures as plain text; the public contract promises JSON
+// { error }, and a client parsing the body must not receive a broken one.
+const relayWorkerFailure = (response: ServerResponse, workerResponse: Response): void => {
+  void workerResponse.text().then((text) => {
+    if ((workerResponse.headers.get('content-type') ?? '').includes('application/json')) {
+      response.writeHead(workerResponse.status, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(text);
+      return;
+    }
+    json(response, workerResponse.status, { error: 'import_rejected', message: text.slice(0, 500).trim() || 'the worker rejected this file' });
+  }).catch(() => json(response, 503, { error: 'import_worker_unavailable' }));
+};
+
 const maxSourceBytes = 10 * 1024 * 1024;
 
 // A source read is bounded: an oversized or unreadable response is recorded as
@@ -1012,7 +1025,7 @@ const server = createServer((request, response) => {
       if (!upload.ok) { json(response, 400, { error: upload.error }); return; }
       try {
         const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${encodeURIComponent(filename)}`, { method: 'POST', body: incoming.data as unknown as BodyInit });
-        if (!workerResponse.ok) { response.writeHead(workerResponse.status, { 'content-type': 'application/json; charset=utf-8' }); response.end(await workerResponse.text()); return; }
+        if (!workerResponse.ok) { relayWorkerFailure(response, workerResponse); return; }
         // The worker owns the validation shape; the API only reads its row count.
         const validation = (await workerResponse.json()) as { rows?: unknown; status?: unknown; checks?: unknown };
         const rows = typeof validation.rows === 'number' ? validation.rows : 0;
@@ -1046,6 +1059,7 @@ const server = createServer((request, response) => {
         const upload = checkUpload({ filename, bytes: incoming.data.length });
         if (!upload.ok) { json(response, 400, { error: upload.error }); return; }
         const workerResponse = await workerFetch(`${workerUrl}/validate-import?filename=${encodeURIComponent(filename)}`, { method: 'POST', body: incoming.data as unknown as BodyInit });
+        if (!workerResponse.ok) { relayWorkerFailure(response, workerResponse); return; }
         response.writeHead(workerResponse.status, { 'content-type': 'application/json; charset=utf-8' }); response.end(await workerResponse.text());
       } catch { json(response, 503, { error: 'import_worker_unavailable' }); }
     });

@@ -1530,3 +1530,21 @@ test('a draft filename cannot escape the uploads directory', async (t) => {
     assert.ok(!body.filename.includes('..'), `stored filename ${body.filename}`);
   }
 });
+
+test('a worker rejection reaches the client as JSON with the reason', async (t) => {
+  if (!ready(t)) return;
+  const owner = await maintainer();
+  // A header with no rows is refused by the worker as plain text; the API must answer JSON.
+  const response = await api('/api/v1/imports/register?filename=header-only.csv&name=Header%20only', {
+    method: 'POST', cookie: owner.cookie, body: 'year\n',
+  });
+  assert.equal(response.status, 422);
+  const body = await responseJson<{ error: string; message?: string }>(response);
+  assert.equal(body.error, 'import_rejected');
+  assert.ok((body.message ?? '').length > 0, 'the rejection reason must reach the client');
+  // And the standalone validate route keeps the same promise.
+  const validate = await api('/api/v1/imports/validate?filename=header-only.csv', { method: 'POST', body: 'year\n' });
+  const validateBody = await responseJson<{ error?: string; message?: string }>(validate);
+  assert.notEqual(validate.status, 503, 'a client error must not look like an outage');
+  if (validate.status >= 400) assert.ok(validateBody.error, 'errors stay in the JSON contract');
+});

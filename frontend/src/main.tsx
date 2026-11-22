@@ -616,8 +616,8 @@ function App() {
         method: 'POST', credentials: 'same-origin',
         headers: { 'content-type': uploadFile.type || 'application/octet-stream' }, body: uploadFile,
       });
-      const body = await response.json().catch(() => ({})) as ImportDraft & { error?: string };
-      if (!response.ok) throw new Error(body.error ?? `Upload failed (${response.status}).`);
+      const body = await response.json().catch(() => ({})) as ImportDraft & { error?: string; message?: string };
+      if (!response.ok) throw new Error(body.message ?? body.error ?? `Upload failed (${response.status}).`);
       setUploadDraft(body); setUploadStatus(`Draft ${body.id} is ${body.status}.`);
     } catch (reason) { setUploadStatus(''); setUploadError(failureMessage(reason, 'Upload failed.')); }
   }

@@ -60,17 +60,93 @@ type WorkerAnalysisResponse = {
   reproducibility_status?: string;
 };
 
-// Public endpoint contract for every route in this file: success is 200, 201,
-// 202, or 204; failures use a JSON { error: '<code>' } body with 400 for bad
-// input (400 invalid_filter adds the offending `parameter`; 400 invalid_token,
-// invalid_filename, invalid_relationship_id, and invalid_metadata likewise name the
-// problem), 422 when a rerun disagrees with the first calculation (reproducibility) or an
-// import is rejected, and a 303 redirect from the browser path of /auth/verify,
-// which answers JSON only to a client that asks for it.
-// 401 sign_in_required / invalid_or_expired_link, 403 for denied roles,
-// 404 for missing records, 409 for state conflicts, 413 for capped bodies, 422
-// for rejected imports, 429 upload_busy, 502 when a connector check cannot read
-// its portal, and 503 for unavailable dependencies.
+// Public endpoint contract. Every route answers JSON except the two noted at the end.
+//
+//   GET  /health                         200 {status, service}
+//   GET  /api/v1/datasets                200 {datasets[]} | 400 invalid_filter(parameter)
+//   GET  /api/v1/datasets/:id            200 release | 404 dataset_not_found
+//   GET  /api/v1/datasets/:id/preview    200 {filters, matching_rows, source_rows}
+//                                        | 400 invalid_filter(parameter, statuses?)
+//                                        | 503 dataset_release_not_imported, analysis_worker_unavailable
+//   POST /api/v1/datasets/:id/refresh-check
+//                                        200 {status, drift, summary} | 400 invalid_filter
+//                                        | 403 maintainer_required | 503 source_check_unavailable
+//   GET  /api/v1/recipes                 200 {recipes[]}
+//   GET  /api/v1/agencies                200 {agencies[]}
+//   POST /api/v1/analyze                 200 {evidence_id, validation, reproducibility_status, result, ...}
+//                                        | 400 invalid_request_body, invalid_json, invalid_filter
+//                                        | 413 request_too_large | 422 reproducibility_mismatch
+//   GET  /api/v1/evidence/:id            200 evidence | 404 evidence_not_found
+//   GET  /api/v1/evidence/:id/export.csv|.json
+//                                        200 file | 404 evidence_not_found
+//   GET  /api/v1/runs/:id                200 run | 400 invalid_error | 404 run_not_found
+//   POST /api/v1/runs                    201 {run_id, selection, insights[], join?, summary}
+//                                        | 400 invalid_json, release_ids_required, invalid_release_id,
+//                                          join_keys_required, release_not_pinned
+//                                        | 409 join rejected | 413 join_too_large
+//   POST /api/v1/join/analyze            200 joined evidence | 400 invalid_json, invalid_join_request,
+//                                        invalid_relationship_id, invalid_release_id | 403 role required
+//   POST /api/v1/join/run                200 {diagnostics, ...} | 400 invalid_json,
+//                                        invalid_join_request, invalid_release_id | 413 join_too_large
+//   GET  /api/v1/connectors              200 {connectors[]}
+//   POST /api/v1/connectors/:id/check    200 check | 401 sign_in_required | 403 maintainer_required
+//                                        | 404 connector_not_found | 502 portal_unreadable
+//                                        | 503 accounts_unavailable, connector_log_unavailable
+//   POST /api/v1/connectors/:id/pin      201 release | 200 {already_pinned, rows} when the
+//                                        bytes are already stored | 400 scraped_source (a
+//                                        scraped portal has no readable API) | 401
+//                                        sign_in_required | 403 maintainer_required | 404
+//                                        connector_not_found | 422 pin_rejected
+//                                        | 502 storage_unavailable | 503 pin_unavailable
+//   POST /api/v1/datasets/:id/import     200 {dataset_release_id, imported_rows, status}
+//                                        | 401 sign_in_required | 403 maintainer_required
+//                                        | 413 request_too_large | 503 coverage_release_unavailable
+//   GET  /api/v1/findings                200 {findings[]} | 400 invalid_filter(parameter)
+//   POST /api/v1/findings                201 finding | 400 invalid_json, evidence_id_required, evidence_not_found,
+//                                        claim_required, claim_too_short, claim_too_long
+//                                        | 401 sign_in_required | 404 evidence_not_found
+//   GET  /api/v1/findings/:id            200 finding | 404 finding_not_found
+//   GET  /api/v1/findings/:id/history    200 {transitions[]} | 404 finding_not_found
+//   GET  /api/v1/findings/:id/comments   200 {comments[]} | 404 finding_not_found
+//   POST /api/v1/findings/:id/comments   201 comment | 400 invalid_json, comment_body_required,
+//                                        comment_too_short, comment_too_long
+//                                        | 401 sign_in_required | 404 finding_not_found
+//   POST /api/v1/comments/:id/removal    200 {status} | 400 invalid_json, reason_required
+//                                        | 403 moderator_required | 404 comment_not_found
+//                                        | 409 comment_already_removed
+//   GET  /api/v1/findings/:id/explanation  200 {explanation|null} | 404 finding_not_found
+//   POST /api/v1/findings/:id/explanation  201 explanation | 401 sign_in_required
+//                                        | 404 finding_not_found | 503 explanation_unavailable
+//   GET  /api/v1/review/queue            200 {findings[]} | 400 invalid_filter(parameter)
+//                                        | 403 reviewer_required
+//   POST /api/v1/findings/:id/decisions  200 {finding, conflict?} | 400 invalid_json, invalid_status,
+//                                        reason_required, reason_too_long | 403 reviewer_required
+//                                        | 404 finding_not_found | 409 invalid_transition(allowed,
+//                                        current_status)
+//   GET  /api/v1/imports/drafts          200 {releases[]} | 401 sign_in_required | 403 reviewer_required
+//   POST /api/v1/imports/register        201 draft | 400 invalid_filename, invalid_json
+//                                        | 401 sign_in_required | 413 request_too_large | 429 upload_busy
+//   POST /api/v1/imports/validate        200 validation | 400 invalid_filename | 413 request_too_large
+//                                        | 429 upload_busy | 503 import_worker_unavailable
+//   POST /api/v1/imports/:id/publish     201 {draft, release_id} | 400 invalid_json, invalid_metadata
+//                                        | 403 maintainer_required | 404 draft_not_found
+//                                        | 409 draft_not_validated, already_published
+//   GET  /api/v1/saved-views             200 {views[]} | 401 sign_in_required
+//   POST /api/v1/saved-views             201 view | 400 invalid_json, name_required, filters_required
+//                                        | 401 sign_in_required
+//   POST /api/v1/auth/magic-link         202 {status: pending} | 400 invalid_json, invalid_email,
+//                                        email_required
+//   GET  /api/v1/auth/verify             303 redirect (browser) or 200 {user} for a JSON client
+//                                        | 400 invalid_token | 401 invalid_or_expired_link
+//   GET  /api/v1/auth/me                 200 {user, demo} | 401 {error, demo}
+//   POST /api/v1/auth/logout             204
+//   POST /api/v1/auth/demo-session       201 {user} | 400 invalid_json, invalid_role
+//                                        | 404 demo_mode_disabled (flag off)
+//
+// Failures always use { error: '<code>' }; 400 invalid_filter adds the offending `parameter`,
+// 413 means a capped body, 429 upload_busy, 502 a connector portal that would not read,
+// 503 an unavailable dependency. 401 sign_in_required, 403 a denied role, 404 a missing
+// record, 409 a state conflict.
 // The findings/:id/page route is HTML and returns 404 or 503 as plain text.
 const maxConcurrentUploads = 2;
 // A public list must stay one bounded response, so the cap is the contract.
@@ -78,6 +154,8 @@ const publicFindingLimit = 100;
 // Record ids are UUIDs. A malformed one cannot exist, so it is a 404 — passing it to
 // Postgres would raise a cast error and be reported as a store outage.
 const recordId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Release ids are slugs such as `release-<uuid>` or `bettergov-gaa-coverage-2026-11-07`.
+const releaseIdPattern = /^[a-z0-9][a-z0-9._-]{0,120}$/i;
 
 function uploadBusy(response: ServerResponse) {
   response.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'retry-after': '1' });
@@ -106,6 +184,25 @@ function readBoundedBody(request: IncomingMessage, limit: number): Promise<{ dat
     request.on('aborted', () => finish({ failed: true }));
     request.on('close', () => finish({ failed: true }));
   });
+}
+
+// A JSON body is only useful as a plain object: `null`, an array, a string or a number
+// would make property access throw and surface as a 503 instead of a client error.
+function objectPayload(data: Buffer): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try { parsed = JSON.parse(data.toString('utf8')); } catch { return undefined; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  return parsed as Record<string, unknown>;
+}
+
+// Routes that take no body still consume it through the bounded reader: a chunked request
+// carries no Content-Length, and an unread body streams in unbounded.
+function withoutBody(request: IncomingMessage, response: ServerResponse, run: () => void): void {
+  readBoundedBody(request, 1024).then((incoming) => {
+    if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+    if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+    run();
+  }).catch(() => json(response, 400, { error: 'invalid_request_body' }));
 }
 
 const maxSourceBytes = 10 * 1024 * 1024;
@@ -156,12 +253,17 @@ const paginate = <T>(items: T[], page: { limit?: number; offset: number }) =>
 async function normalizeDraft(filename: string, data: Buffer, publicId: string): Promise<number> {
   let offset = 0;
   let total = 0;
+  // A page loop bounded by the worker's own claim is a loop the worker can extend
+  // forever; the row cap and a page cap are the contract, not the response.
+  const maxPages = Math.ceil(maxReleaseRows / 1000) + 1;
+  let pages = 0;
   do {
+    if ((pages += 1) > maxPages) throw new Error('normalization_too_large');
     const response = await workerFetch(`${workerUrl}/normalize-import?filename=${encodeURIComponent(filename)}&offset=${offset}&limit=1000`,
       { method: 'POST', body: data as unknown as BodyInit });
     if (!response.ok) throw new Error('normalization_failed');
     const page = (await response.json()) as { total_rows?: number; rows?: Array<Record<string, unknown>> };
-    total = Number(page.total_rows ?? 0);
+    total = Math.min(Number(page.total_rows ?? 0), maxReleaseRows);
     const rows = Array.isArray(page.rows) ? page.rows : [];
     if (rows.length) await saveImportRows(publicId, offset, rows);
     if (!rows.length) break;
@@ -203,8 +305,9 @@ async function normalizeReleaseRows(filename: string, data: Buffer): Promise<{
 }
 
 // The verified release this deployment ships with, named rather than positional.
-const betterGovRelease = catalog.find((item) => item.id === 'bettergov-gaa-coverage-2026-11-07');
-if (!betterGovRelease) throw new Error('catalog is missing the verified bettergov-gaa-coverage-2026-11-07 release');
+const verifiedReleaseId = 'bettergov-gaa-coverage-2026-11-07';
+const betterGovRelease = catalog.find((item) => item.id === verifiedReleaseId);
+if (!betterGovRelease) throw new Error(`catalog is missing the verified ${verifiedReleaseId} release`);
 const columnsFromSchema = (schema: Record<string, unknown> | undefined): Column[] => schemaColumns(schema);
 const grainFromSchema = (schema: Record<string, unknown> | undefined): string =>
   typeof schema?.grain === 'string' && schema.grain.trim() ? schema.grain : 'row';
@@ -285,8 +388,9 @@ const server = createServer((request, response) => {
     readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
       if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
-      let payload: unknown;
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as unknown;
       const email = payload && typeof payload === 'object' && 'email' in payload ? (payload as { email?: unknown }).email : undefined;
       if (typeof email !== 'string') { json(response, 400, { error: 'email_required' }); return; }
       try {
@@ -309,8 +413,9 @@ const server = createServer((request, response) => {
     readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
       if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
-      let payload: unknown;
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as unknown;
       const role = payload && typeof payload === 'object' && 'role' in payload ? (payload as { role?: unknown }).role : undefined;
       if (role !== 'submitter' && role !== 'reviewer' && role !== 'maintainer') { json(response, 400, { error: 'invalid_role' }); return; }
       try {
@@ -351,11 +456,13 @@ const server = createServer((request, response) => {
   }
 
   if (request.method === 'POST' && request.url === '/api/v1/auth/logout') {
-    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
-    auth.logout(requestSessionToken(request)).then(() => {
-      response.writeHead(204, { 'set-cookie': clearSessionCookie(cookieSecure) });
-      response.end();
-    }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
+    withoutBody(request, response, () => {
+      if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+      auth.logout(requestSessionToken(request)).then(() => {
+        response.writeHead(204, { 'set-cookie': clearSessionCookie(cookieSecure) });
+        response.end();
+      }).catch(() => json(response, 503, { error: 'accounts_unavailable' }));
+    });
     return;
   }
 
@@ -398,8 +505,9 @@ const server = createServer((request, response) => {
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
-      let payload: { status?: unknown; reason?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { status?: unknown; reason?: unknown };
       if (!isStatus(payload.status)) { json(response, 400, { error: 'invalid_status' }); return; }
       const reason = validateReason(payload.reason);
       if ('error' in reason) { json(response, 400, { error: reason.error }); return; }
@@ -438,7 +546,7 @@ const server = createServer((request, response) => {
   if (commentsMatch) {
     const page = paginationFor(request.url);
     if ('error' in page) { json(response, 400, { error: 'invalid_pagination' }); return; }
-    listComments(commentsMatch[1]).then((comments) => json(response, 200, { comments: paginate(comments, page) })).catch(() => json(response, 503, { error: 'comments_unavailable' }));
+    getFinding(commentsMatch[1]).then((finding) => finding ? listComments(commentsMatch[1]).then((comments) => json(response, 200, { comments: paginate(comments, page) })) : json(response, 404, { error: 'finding_not_found' })).catch(() => json(response, 503, { error: 'comments_unavailable' }));
     return;
   }
 
@@ -450,8 +558,9 @@ const server = createServer((request, response) => {
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
-      let payload: { body?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { body?: unknown };
       const body = validateCommentBody(payload.body);
       if ('error' in body) { json(response, 400, { error: body.error }); return; }
       const finding = await getFinding(newCommentMatch[1]);
@@ -469,8 +578,9 @@ const server = createServer((request, response) => {
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
-      let payload: { reason?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { reason?: unknown };
       const reason = validateRemovalReason(payload.reason);
       if ('error' in reason) { json(response, 400, { error: reason.error }); return; }
       // Only a moderator removes content, and only while it is still visible.
@@ -498,6 +608,7 @@ const server = createServer((request, response) => {
   const newExplanationMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/explanation$/) : undefined;
   if (newExplanationMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    withoutBody(request, response, () => {
     (async () => {
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
@@ -517,18 +628,19 @@ const server = createServer((request, response) => {
       });
       json(response, 201, record);
     })().catch(() => json(response, 503, { error: 'explanation_unavailable' }));
+    });
     return;
   }
 
   const explanationMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/explanation$/) : undefined;
   if (explanationMatch) {
-    getLatestExplanation(explanationMatch[1]).then((record) => json(response, 200, { explanation: record ?? null })).catch(() => json(response, 503, { error: 'explanation_unavailable' }));
+    getFinding(explanationMatch[1]).then((finding) => finding ? getLatestExplanation(explanationMatch[1]).then((record) => json(response, 200, { explanation: record ?? null })) : json(response, 404, { error: 'finding_not_found' })).catch(() => json(response, 503, { error: 'explanation_unavailable' }));
     return;
   }
 
   const historyMatch = request.method === 'GET' ? request.url?.match(/^\/api\/v1\/findings\/([^/]+)\/history$/) : undefined;
   if (historyMatch) {
-    listTransitions(historyMatch[1]).then((transitions) => json(response, 200, { transitions })).catch(() => json(response, 503, { error: 'review_history_unavailable' }));
+    getFinding(historyMatch[1]).then((finding) => finding ? listTransitions(historyMatch[1]).then((transitions) => json(response, 200, { transitions })) : json(response, 404, { error: 'finding_not_found' })).catch(() => json(response, 503, { error: 'review_history_unavailable' }));
     return;
   }
 
@@ -554,6 +666,7 @@ const server = createServer((request, response) => {
   const connectorCheckMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/connectors\/([^/]+)\/check$/) : undefined;
   if (connectorCheckMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    withoutBody(request, response, () => {
     (async () => {
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
@@ -582,6 +695,7 @@ const server = createServer((request, response) => {
       await insertConnectorCheck({ connector: connector.id, status, httpStatus, datasetCount, message });
       json(response, status === 'ok' ? 200 : 502, { connector: connector.id, status, dataset_count: datasetCount, http_status: httpStatus, message });
     })().catch(() => json(response, 503, { error: 'connector_log_unavailable' }));
+    });
     return;
   }
 
@@ -596,9 +710,9 @@ const server = createServer((request, response) => {
       if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
       const connector = getConnector(pinMatch[1]);
       if (!connector) { json(response, 404, { error: 'connector_not_found' }); return; }
-      let payload: { dataset_id?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')) as { dataset_id?: unknown }; }
-      catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { dataset_id?: unknown };
       if (typeof payload.dataset_id !== 'string' || !payload.dataset_id.trim()) { json(response, 400, { error: 'dataset_id_required' }); return; }
       const datasetId = payload.dataset_id;
 
@@ -614,6 +728,11 @@ const server = createServer((request, response) => {
         return;
       }
 
+      // A connector release is capped like an upload, or the boundary differs by door.
+      if (pinned.bytes.length > maxUploadBytes) {
+        json(response, 413, { error: 'release_too_large', limit: maxUploadBytes });
+        return;
+      }
       const bytes = Buffer.from(pinned.bytes);
       const checksum = createHash('sha256').update(bytes).digest('hex');
       const key = releaseKey(connector.id, datasetId, checksum);
@@ -668,10 +787,14 @@ const server = createServer((request, response) => {
     readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
       if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
-      let payload: { release_ids?: unknown; left_key?: unknown; right_key?: unknown; filters?: unknown; options?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
-      const releaseIds = Array.isArray(payload.release_ids) ? payload.release_ids.filter((id): id is string => typeof id === 'string') : [];
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { release_ids?: unknown; left_key?: unknown; right_key?: unknown; filters?: unknown; options?: unknown };
+      const rawReleaseIds: unknown[] = Array.isArray(payload.release_ids) ? payload.release_ids : [];
+      if (!rawReleaseIds.every((id) => typeof id === 'string')) { json(response, 400, { error: 'invalid_release_id' }); return; }
+      const releaseIds = rawReleaseIds as string[];
       if (releaseIds.length < 1 || releaseIds.length > 2) { json(response, 400, { error: 'release_ids_required', message: 'a run analyses one release or joins exactly two' }); return; }
+      if (!releaseIds.every((id) => releaseIdPattern.test(id))) { json(response, 400, { error: 'invalid_release_id' }); return; }
       const rowsByRelease = await Promise.all(releaseIds.map(async (id) => ({ id, rows: await getReleaseRows(id, maxJoinedRows) })));
       for (const entry of rowsByRelease) {
         if (!entry.rows.length) { json(response, 400, { error: 'release_not_pinned', message: `release ${entry.id} has no stored rows; pin it first` }); return; }
@@ -698,6 +821,10 @@ const server = createServer((request, response) => {
           right: { label: right.id, columns: rightColumns, rows: right.rows, grain: 'row' },
           leftKey: payload.left_key, rightKey: payload.right_key });
         if (!plan.ok) { json(response, 400, { error: plan.error, message: plan.message }); return; }
+        // Defence in depth: the planner already refuses a non-unique right side, so a
+        // joined row can never exceed the left side. Refusing here keeps that true even
+        // if the planner's rules change.
+        if (left.rows.length >= maxJoinedRows) { json(response, 413, { error: 'join_too_large', rows: left.rows.length, limit: maxJoinedRows }); return; }
         const joined = executeJoin(plan.plan, left.rows, right.rows);
         const limited = limitJoinedRows(joined.rows, maxJoinedRows);
         if (limited.truncated) { json(response, 413, { error: 'join_too_large', rows: joined.rows.length, limit: maxJoinedRows }); return; }
@@ -764,8 +891,9 @@ const server = createServer((request, response) => {
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
-      let payload: { name?: unknown; datasetReleaseId?: unknown; filters?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { name?: unknown; datasetReleaseId?: unknown; filters?: unknown };
       if (typeof payload.name !== 'string' || !payload.name.trim()) { json(response, 400, { error: 'name_required' }); return; }
       if (typeof payload.datasetReleaseId !== 'string') { json(response, 400, { error: 'dataset_release_id_required' }); return; }
       if (!payload.filters || typeof payload.filters !== 'object' || Array.isArray(payload.filters)) { json(response, 400, { error: 'filters_required' }); return; }
@@ -805,6 +933,12 @@ const server = createServer((request, response) => {
         if (!normalizedRows.length) { json(response, 503, { error: 'dataset_release_not_imported' }); return; }
         const selectedYears = years ?? yearValues;
         const status = params.get('status');
+        // A misspelled status would silently answer zero rows; the statuses that exist in
+        // this release are the only ones a filter can mean.
+        if (status !== null && !normalizedRows.some((row) => row.status === status)) {
+          json(response, 400, { error: 'invalid_filter', parameter: 'status', statuses: [...new Set(normalizedRows.map((row) => row.status))] });
+          return;
+        }
         const matchingRows = normalizedRows.filter((row) => (!selectedYears || selectedYears.includes(row.year)) && (!status || row.status === status));
         json(response, 200, { filters: Object.fromEntries(params.entries()), matching_rows: matchingRows.length, source_rows: normalizedRows.length });
         return;
@@ -835,8 +969,9 @@ const server = createServer((request, response) => {
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
-      let payload: { reason?: unknown; metadata?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { reason?: unknown; metadata?: unknown };
       const reason = validateReason(payload.reason);
       if ('error' in reason) { json(response, 400, { error: reason.error }); return; }
       if (!payload.metadata || typeof payload.metadata !== 'object') { json(response, 400, { error: 'invalid_metadata' }); return; }
@@ -920,6 +1055,7 @@ const server = createServer((request, response) => {
   const refreshMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/datasets\/([^/]+)\/refresh-check$/) : undefined;
   if (refreshMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    withoutBody(request, response, () => {
     (async () => {
       const user = await auth.session(requestSessionToken(request));
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
@@ -947,22 +1083,27 @@ const server = createServer((request, response) => {
       });
       json(response, 200, { status, drift, summary });
     })().catch(() => json(response, 503, { error: 'refresh_unavailable' }));
+    });
     return;
   }
 
-  if (request.method === 'POST' && request.url === '/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/import') {
+  if (request.method === 'POST' && request.url === `/api/v1/datasets/${verifiedReleaseId}/import`) {
     // A write to the catalog: it must belong to a maintainer, like every other one.
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
-    auth.session(requestSessionToken(request)).then((user) => {
+    // The route takes no body, so the body is still read through the bounded reader:
+    // Content-Length is absent for chunked requests and cannot be trusted alone.
+    readBoundedBody(request, 1024).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      const user = await auth.session(requestSessionToken(request)).catch(() => undefined);
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
       return workerFetch(`${workerUrl}/records`).then(async (workerResponse) => {
       if (!workerResponse.ok) { json(response, 503, { error: 'coverage_release_unavailable' }); return; }
       const rows = await workerResponse.json() as Array<{ DatasetReleaseID: string; FiscalYear: number; CoverageStatus: string; SourceRowCount: number; AmountPesos?: number; Scopes?: Record<string, unknown>; Notes: string[] }>;
-      const named = catalog.find((item) => item.id === 'bettergov-gaa-coverage-2026-11-07');
-      if (!named) { json(response, 503, { error: 'coverage_release_unavailable' }); return; }
-      const imported = await saveNormalizedCoverage(rows, named);
-        json(response, 200, { dataset_release_id: 'bettergov-gaa-coverage-2026-11-07', imported_rows: imported, status: 'validated' });
+      if (!Array.isArray(rows) || rows.length > maxJoinedRows) { json(response, 413, { error: 'import_too_large', limit: maxJoinedRows }); return; }
+      const imported = await saveNormalizedCoverage(rows, betterGovRelease);
+        json(response, 200, { dataset_release_id: verifiedReleaseId, imported_rows: imported, status: 'validated' });
       });
     }).catch((error) => { console.error(error); json(response, 503, { error: 'normalized_import_unavailable' }); });
     return;
@@ -973,8 +1114,9 @@ const server = createServer((request, response) => {
     readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
       if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
-      let payload: unknown;
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as unknown;
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) { json(response, 400, { error: 'invalid_join_request' }); return; }
       const body = payload as Record<string, unknown>;
       const field = (name: string) => typeof body[name] === 'string' && (body[name] as string).trim() ? body[name] as string : undefined;
@@ -983,6 +1125,8 @@ const server = createServer((request, response) => {
       const leftKey = field('left_key');
       const rightKey = field('right_key');
       if (!leftReleaseId || !rightReleaseId || !leftKey || !rightKey) { json(response, 400, { error: 'invalid_join_request' }); return; }
+      if (!releaseIdPattern.test(leftReleaseId) || !releaseIdPattern.test(rightReleaseId)) { json(response, 400, { error: 'invalid_release_id' }); return; }
+      if (leftKey.length > 64 || rightKey.length > 64) { json(response, 400, { error: 'invalid_join_request' }); return; }
 
       let aggregation: Aggregation | undefined;
       if (body.aggregation !== undefined) {
@@ -1001,7 +1145,7 @@ const server = createServer((request, response) => {
       const [leftCount, rightCount] = await Promise.all([countReleaseRows(leftReleaseId), countReleaseRows(rightReleaseId)]);
       if (!leftCount || !rightCount) { json(response, 400, { error: 'release_not_pinned' }); return; }
       const [leftRows, rightRows, leftSchema, rightSchema] = await Promise.all([
-        getReleaseRows(leftReleaseId), getReleaseRows(rightReleaseId),
+        getReleaseRows(leftReleaseId, maxJoinedRows), getReleaseRows(rightReleaseId, maxJoinedRows),
         getReleaseRowSchema(leftReleaseId), getReleaseRowSchema(rightReleaseId),
       ]);
       const planned = planTwoWayJoin({
@@ -1028,8 +1172,9 @@ const server = createServer((request, response) => {
     readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
       if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
-      let payload: { relationship_id?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { relationship_id?: unknown };
       const relationshipId = typeof payload.relationship_id === 'string' ? payload.relationship_id : '11111111-2222-3333-4444-555555555555';
       // The id goes straight into a uuid column, so a malformed one is rejected here
       // rather than surfacing as a cast error reported as an outage.
@@ -1039,7 +1184,9 @@ const server = createServer((request, response) => {
       const planned = planJoin({ relationship: relationship as Relationship,
         primaryReleaseId: relationship.primaryReleaseId, relatedReleaseId: relationship.relatedReleaseId });
       if (!planned.ok) { json(response, 409, { error: planned.error }); return; }
-      const [leftRows, rightRows] = await Promise.all([getJoinRows(relationship.primaryReleaseId), getJoinRows(relationship.relatedReleaseId)]);
+      // One row past the cap is enough to know the release is too large to join.
+      const [leftRows, rightRows] = await Promise.all([getJoinRows(relationship.primaryReleaseId, maxJoinedRows + 1), getJoinRows(relationship.relatedReleaseId, maxJoinedRows + 1)]);
+      if (leftRows.length > maxJoinedRows || rightRows.length > maxJoinedRows) { json(response, 413, { error: 'join_too_large', limit: maxJoinedRows }); return; }
       const workerBody = { recipe: 'joined_summary', keys: planned.plan.joinKeys, left_rows: leftRows, right_rows: rightRows };
       const callWorker = () => workerFetch(`${workerUrl}/analyze-join`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(workerBody),
@@ -1083,8 +1230,9 @@ const server = createServer((request, response) => {
       if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
       if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
       try {
-        let payload: unknown;
-        try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+        const parsedPayload = objectPayload(incoming.data);
+        if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+        const payload = parsedPayload as unknown;
         if (!payload || typeof payload !== 'object' || !('recipe' in payload) || typeof payload.recipe !== 'string') { json(response, 400, { error: 'recipe_required' }); return; }
         const requestBody = payload as Record<string, unknown>;
         const allowedRecipes = new Set(['summary', 'compare', 'rank', 'distribution', 'change_over_time']);
@@ -1098,7 +1246,7 @@ const server = createServer((request, response) => {
           if (!Array.isArray(requestBody.compare_years) || requestBody.compare_years.length !== 2 || requestBody.compare_years.some((value) => !Number.isInteger(value) || value < 2000 || value > 2026)) { json(response, 400, { error: 'compare_requires_two_valid_fiscal_years' }); return; }
           compareYears = requestBody.compare_years as number[];
         } else if (requestBody.compare_years !== undefined) { json(response, 400, { error: 'compare_years_only_valid_for_compare' }); return; }
-        const normalizedRows = await getNormalizedCoverage('bettergov-gaa-coverage-2026-11-07');
+        const normalizedRows = await getNormalizedCoverage(verifiedReleaseId);
         if (normalizedRows && normalizedRows.length === 0) { json(response, 503, { error: 'dataset_release_not_imported' }); return; }
         const workerBody = {
           recipe: payload.recipe,
@@ -1125,7 +1273,7 @@ const server = createServer((request, response) => {
         result.reproducibility_status = 'Passed';
         result.validation.checks.push('deterministic rerun matched');
         const evidence = await saveEvidence({
-          datasetReleaseId: 'bettergov-gaa-coverage-2026-11-07',
+          datasetReleaseId: verifiedReleaseId,
           recipe: String(result.recipe), recipeVersion: String(result.recipe_version),
           filters: (result.filters ?? {}) as Record<string, unknown>, result: result.result,
           inputRows: Number(result.input_rows ?? 0), outputRows: Number(result.output_rows ?? 0),
@@ -1153,8 +1301,9 @@ const server = createServer((request, response) => {
       const user = await auth.session(requestSessionToken(request)).catch(() => undefined);
       if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
       // Only the parse is a client error; everything after it can fail on the store.
-      let payload: { evidence_id?: unknown; claim?: unknown };
-      try { payload = JSON.parse(incoming.data.toString('utf8')); } catch { json(response, 400, { error: 'invalid_json' }); return; }
+      const parsedPayload = objectPayload(incoming.data);
+      if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
+      const payload = parsedPayload as { evidence_id?: unknown; claim?: unknown };
       if (typeof payload.evidence_id !== 'string') { json(response, 400, { error: 'evidence_id_required' }); return; }
       const claim = validateClaim(payload.claim);
       if ('error' in claim) { json(response, 400, { error: claim.error }); return; }
@@ -1212,7 +1361,10 @@ const server = createServer((request, response) => {
     if (offset !== null && !/^\d+$/.test(offset)) { json(response, 400, { error: 'invalid_filter', parameter: 'offset' }); return; }
     const requested = limit === null ? publicFindingLimit : Number(limit);
     if (requested < 1 || requested > publicFindingLimit) { json(response, 400, { error: 'invalid_filter', parameter: 'limit' }); return; }
-    listPublicFindings({ statuses: status === null ? undefined : [status], limit: requested, offset: offset === null ? 0 : Number(offset) })
+    const from = offset === null ? 0 : Number(offset);
+    // A huge offset becomes Infinity and reaches the store as a broken row position.
+    if (!Number.isSafeInteger(from) || from > 10_000) { json(response, 400, { error: 'invalid_filter', parameter: 'offset' }); return; }
+    listPublicFindings({ statuses: status === null ? undefined : [status], limit: requested, offset: from })
       .then((findings) => json(response, 200, { findings }))
       .catch(() => json(response, 503, { error: 'finding_store_unavailable' }));
     return;

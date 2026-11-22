@@ -150,6 +150,10 @@ export async function publishImportDraft(input: {
     );
     // A CSV arrives with every value as text; the declared types are what make a column
     // analysable, so numeric columns are cast here rather than left as strings.
+    //
+    // `release_rows` is derived analysis data and is deliberately mutable: the append-only
+    // triggers cover `dataset_releases` and the evidence tables (migrations/005, 023), not
+    // the rows themselves, which are replaced when a release is re-pinned.
     for (const column of columns) {
       if (column.type !== 'integer' && column.type !== 'number') continue;
       await client.query(
@@ -298,12 +302,6 @@ export async function insertInsight(input: { runId: string; recipe: string; rele
   await pool.query('INSERT INTO insights (id, run_id, recipe, dataset_release_id, recipe_version, status, evidence_id, reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
     [id, input.runId, input.recipe, input.releaseId, input.recipeVersion, input.status, input.evidenceId ?? null, input.reason ?? '']);
   return id;
-}
-
-export async function attachInsightEvidence(insightId: string, evidenceId: string): Promise<void> {
-  if (!pool) throw new Error('database_required');
-  const updated = await pool.query('UPDATE insights SET evidence_id = $2 WHERE id = $1 AND evidence_id IS NULL RETURNING id', [insightId, evidenceId]);
-  if (!updated.rows[0]) throw new Error('evidence_already_attached');
 }
 
 export async function getRun(id: string): Promise<{ run: RunRecord; insights: InsightRow[] } | undefined> {
@@ -484,7 +482,7 @@ export async function saveNormalizedCoverage(rows: Array<{ DatasetReleaseID: str
 
 export async function saveEvidence(input: Omit<Evidence, 'id' | 'createdAt'>): Promise<Evidence> {
   const evidence: Evidence = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
-  memory.set(evidence.id, evidence);
+  // Insert first: caching before the write would serve evidence that was never stored.
   if (pool) {
     await pool.query(
       `INSERT INTO analysis_runs (id, dataset_release_id, recipe, recipe_version, filters, result, validation, reproducibility_status, input_rows, output_rows, release_checksum, calculation)
@@ -495,6 +493,7 @@ export async function saveEvidence(input: Omit<Evidence, 'id' | 'createdAt'>): P
         evidence.inputRows, evidence.outputRows, evidence.releaseChecksum, evidence.calculation],
     );
   }
+  memory.set(evidence.id, evidence);
   return evidence;
 }
 
@@ -508,11 +507,12 @@ export async function getRelationship(id: string): Promise<Relationship | undefi
     joinKeys: row.join_keys as string[], status: row.status } : undefined;
 }
 
-export async function getJoinRows(releaseId: string): Promise<Array<{ fiscal_year: number; coverage_status: string; source_row_count: number }>> {
+export async function getJoinRows(releaseId: string, limit?: number): Promise<Array<{ fiscal_year: number; coverage_status: string; source_row_count: number }>> {
   if (!pool) return [];
+  // The limit is pushed into the query so an oversized release is never materialized.
   const result = await pool.query(
-    'SELECT fiscal_year, coverage_status, source_row_count FROM coverage_records WHERE dataset_release_id = $1 ORDER BY fiscal_year',
-    [releaseId],
+    `SELECT fiscal_year, coverage_status, source_row_count FROM coverage_records WHERE dataset_release_id = $1 ORDER BY fiscal_year${limit ? ' LIMIT $2' : ''}`,
+    limit ? [releaseId, limit] : [releaseId],
   );
   return result.rows.map((row) => ({ fiscal_year: row.fiscal_year, coverage_status: row.coverage_status, source_row_count: row.source_row_count }));
 }

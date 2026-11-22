@@ -576,8 +576,11 @@ test('anonymous explanation generation is refused with 401', async (t) => {
 });
 
 test('a finding has no explanation before one is generated', async (t) => {
-  if (!ready(t)) return;
-  const response = await api(`/api/v1/findings/${randomUUID()}/explanation`);
+  if (!ready(t, true)) return;
+  // An unknown finding is 404; a real one with no explanation is a null, not a 404.
+  assert.equal((await api(`/api/v1/findings/${randomUUID()}/explanation`)).status, 404);
+  const finding = await submitFinding((await signIn('no-explanation-author')).cookie);
+  const response = await api(`/api/v1/findings/${finding.id}/explanation`);
   assert.equal(response.status, 200);
   assert.deepEqual(await responseJson<unknown>(response), { explanation: null });
 });
@@ -1446,4 +1449,66 @@ test('a malformed comment id is not found, and an aborted upload releases its ga
   const after = await api('/api/v1/imports/validate?filename=x.csv', { method: 'POST', body: 'a,b\n1,2\n' });
   assert.notEqual(after.status, 429, 'an aborted upload must not hold the upload gate');
   assert.equal((await api('/health')).status, 200);
+});
+
+test('a JSON body that is not an object is rejected as bad input, never a 503', async (t) => {
+  if (!ready(t)) return;
+  const moderator = await reviewer();
+  const sites: Array<{ path: string; cookie?: string }> = [
+    { path: '/api/v1/auth/magic-link' },
+    { path: '/api/v1/findings', cookie: moderator.cookie },
+    { path: '/api/v1/runs', cookie: moderator.cookie },
+    { path: '/api/v1/saved-views', cookie: moderator.cookie },
+    { path: '/api/v1/join/analyze', cookie: moderator.cookie },
+  ];
+  for (const body of ['null', '[]', '"text"', '42']) {
+    for (const site of sites) {
+      const response = await api(site.path, { method: 'POST', cookie: site.cookie, body });
+      assert.ok([400, 401, 403].includes(response.status), `${site.path} with ${body} → ${response.status}`);
+      assert.notEqual(response.status, 503, `${site.path} with ${body} must not report an outage`);
+    }
+  }
+  assert.equal((await api('/health')).status, 200);
+});
+
+test('a malformed release id is refused before it reaches the store', async (t) => {
+  if (!ready(t)) return;
+  const account = await maintainer();
+  const run = await api('/api/v1/runs', { method: 'POST', cookie: account.cookie, body: { release_ids: ['not a release id!'] } });
+  assert.equal(run.status, 400);
+  assert.equal((await responseJson<{ error: string }>(run)).error, 'invalid_release_id');
+  const joinRun = await api('/api/v1/join/run', { method: 'POST', cookie: account.cookie, body: { left_release_id: '../../etc/passwd', right_release_id: 'x', left_key: 'year', right_key: 'year' } });
+  assert.equal(joinRun.status, 400);
+  assert.equal((await responseJson<{ error: string }>(joinRun)).error, 'invalid_release_id');
+});
+
+test('a huge offset or a mixed release list is refused, not silently coerced', async (t) => {
+  if (!ready(t)) return;
+  const huge = await api('/api/v1/findings?offset=99999999999999999999');
+  assert.equal(huge.status, 400);
+  assert.equal((await responseJson<{ parameter: string }>(huge)).parameter, 'offset');
+  const account = await maintainer();
+  const mixed = await api('/api/v1/runs', { method: 'POST', cookie: account.cookie, body: { release_ids: ['release-plan-left', 123] } });
+  assert.equal(mixed.status, 400);
+  assert.equal((await responseJson<{ error: string }>(mixed)).error, 'invalid_release_id');
+});
+
+test('a status filter that names no existing status is refused with the ones that exist', async (t) => {
+  if (!ready(t)) return;
+  const bad = await api('/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/preview?status=not_a_status');
+  assert.equal(bad.status, 400);
+  const body = await responseJson<{ parameter: string; statuses: string[] }>(bad);
+  assert.equal(body.parameter, 'status');
+  assert.ok(body.statuses.length > 0, 'the error must name the statuses that do exist');
+  const good = await api('/api/v1/datasets/bettergov-gaa-coverage-2026-11-07/preview?status=published_source_baseline');
+  assert.equal(good.status, 200);
+});
+
+test('a sub-resource of an unknown finding is 404, not an empty list', async (t) => {
+  if (!ready(t)) return;
+  const missing = '00000000-0000-0000-0000-000000000000';
+  for (const path of [`/api/v1/findings/${missing}/comments`, `/api/v1/findings/${missing}/history`, `/api/v1/findings/${missing}/explanation`]) {
+    const response = await api(path);
+    assert.equal(response.status, 404, path);
+  }
 });

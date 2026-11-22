@@ -160,7 +160,10 @@ th, td { text-align: left; vertical-align: top; padding: .45rem .5rem; border-bo
 .release-list li, .view-list li { overflow-wrap: anywhere; }
 .import-result, .join-result { margin-top: 1rem; overflow-wrap: anywhere; }
 .publish-form { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--line); }
-.explanation-text { margin: .5rem 0; overflow-wrap: anywhere; }
+/* The explanation arrives after the panel is on screen; without a reserved height its
+   arrival shifts everything below it, including the queue a reviewer is clicking in. */
+.explanation-text { margin: .5rem 0; min-height: 3.2rem; overflow-wrap: anywhere; }
+.finding-detail-slot { min-height: 4rem; }
 .explanation-actions { margin-top: .5rem; }
 
 /* MVP-E interface: sources, dataset picks, and per-insight run cards. */

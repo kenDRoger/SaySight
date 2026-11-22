@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState, type ReactNode } from 'react';
+import { type FormEvent, useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button } from '@bettergov/kapwa/button';
 import { Card } from '@bettergov/kapwa/card';
@@ -522,16 +522,24 @@ function App() {
     if (!draft?.status) return;
     setQueueError(''); setReviewStatus('Recording decision…');
     try {
-      const result = await apiRequest<{ conflict?: { statuses: string[] } }>(`/api/v1/findings/${encodeURIComponent(item.id)}/decisions`, {
+      const result = await apiRequest<{ finding?: Finding; conflict?: { statuses: string[] } }>(`/api/v1/findings/${encodeURIComponent(item.id)}/decisions`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: draft.status, reason: draft.reason }),
       });
+      // The server owns the resulting status: a high-impact finding stays In review after
+      // one terminal decision because it needs a second independent reviewer.
+      const nextStatus = result.finding?.status ?? draft.status;
       setDecisionDrafts((current) => ({ ...current, [item.id]: { status: '', reason: '' } }));
-      setReviewStatus(result.conflict ? `Reviewers disagreed (${result.conflict.statuses.join(' vs ')}); both positions are recorded.` : 'Decision recorded.');
-      await loadFinding(item.id);
-      try {
-        const refreshed = await apiRequest<{ findings: Finding[] }>(`/api/v1/review/queue${queueQuery()}`);
-        setQueue(refreshed.findings);
-      } catch (cause) { setQueueError(failureMessage(cause, 'Review queue unavailable.')); }
+      setReviewStatus(result.conflict
+        ? `Reviewers disagreed (${result.conflict.statuses.join(' vs ')}); both positions are recorded.`
+        : nextStatus !== draft.status
+          ? `Recorded ${draft.status}. This finding is high impact, so it stays ${nextStatus} until a second reviewer agrees.`
+          : 'Decision recorded.');
+      // Only refresh the detail if that is the finding on screen; loading it during an
+      // unrelated decision re-lays-out the page and moves the button being clicked.
+      if (selected?.id === item.id) await loadFinding(item.id);
+      // Keep the row where it is with its new status: refetching removes it and shifts
+      // everything under the pointer, so the reviewer's next click lands somewhere else.
+      setQueue((current) => current.map((entry) => (entry.id === item.id ? { ...entry, status: nextStatus } : entry)));
     } catch (reason) {
       setReviewStatus(''); setQueueError(failureMessage(reason, 'Decision failed.'));
     }
@@ -759,7 +767,7 @@ function App() {
         </> : <details className="signin">
           <summary>Sign in</summary>
           <form onSubmit={requestLink}>
-            <div className="form-field"><Label htmlFor="sign-in-email">Email for a sign-in link</Label><Input id="sign-in-email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></div>
+            <div className="form-field"><Label htmlFor="sign-in-email">Email for a sign-in link</Label><Input id="sign-in-email" type="email" required maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} /></div>
             <Button type="submit" variant="primary" size="md" isLoading={requestingLink} disabled={requestingLink}>{requestingLink ? 'Sending…' : 'Send sign-in link'}</Button>
           </form>
           {sessionMessage && <p role="status" className="muted">{sessionMessage}</p>}
@@ -952,8 +960,8 @@ function App() {
           <div className="form-field"><Label htmlFor="run-left-key">Join key from the left release ({selectedReleases[0].name})</Label><select id="run-left-key" value={leftKey} onChange={(event) => setLeftKey(event.target.value)}><option value="">Choose a column</option>{releaseColumns(selectedReleases[0]).map((column) => <option key={column.name} value={column.name}>{column.name} ({column.type ?? 'unknown type'})</option>)}</select></div>
           <div className="form-field"><Label htmlFor="run-right-key">Join key from the right release ({selectedReleases[1].name})</Label><select id="run-right-key" value={rightKey} onChange={(event) => setRightKey(event.target.value)}><option value="">Choose a column</option>{releaseColumns(selectedReleases[1]).map((column) => <option key={column.name} value={column.name}>{column.name} ({column.type ?? 'unknown type'})</option>)}</select></div>
         </>}
-        <div className="form-field"><Label htmlFor="run-period-a">First period for compare (optional)</Label><Input id="run-period-a" value={periodA} onChange={(event) => setPeriodA(event.target.value)} placeholder="e.g. 2024" /></div>
-        <div className="form-field"><Label htmlFor="run-period-b">Second period for compare (optional)</Label><Input id="run-period-b" value={periodB} onChange={(event) => setPeriodB(event.target.value)} placeholder="e.g. 2025" /></div>
+        <div className="form-field"><Label htmlFor="run-period-a">First period for compare (optional)</Label><Input id="run-period-a" maxLength={10} value={periodA} onChange={(event) => setPeriodA(event.target.value)} placeholder="e.g. 2024" /></div>
+        <div className="form-field"><Label htmlFor="run-period-b">Second period for compare (optional)</Label><Input id="run-period-b" maxLength={10} value={periodB} onChange={(event) => setPeriodB(event.target.value)} placeholder="e.g. 2025" /></div>
         <Button type="submit" variant="primary" size="md" isLoading={running} disabled={running || !canRun}>{running ? 'Running…' : 'Run insights'}</Button>
       </form>}
       {running && <p role="status">Running insights…</p>}
@@ -1155,11 +1163,11 @@ function App() {
         <h3>Publish this validated draft</h3>
         <div className="form-field"><Label htmlFor="publish-reason">Reason for publishing</Label><textarea id="publish-reason" required maxLength={2000} value={publishForm.reason} onChange={(event) => setPublishForm({ ...publishForm, reason: event.target.value })} /></div>
         <div className="form-field"><Label htmlFor="publish-publisher">Publisher</Label><Input id="publish-publisher" required maxLength={200} value={publishForm.publisher} onChange={(event) => setPublishForm({ ...publishForm, publisher: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-source-url">Source URL</Label><Input id="publish-source-url" type="url" required value={publishForm.sourceUrl} onChange={(event) => setPublishForm({ ...publishForm, sourceUrl: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-source-url">Source URL</Label><Input id="publish-source-url" type="url" required maxLength={2048} value={publishForm.sourceUrl} onChange={(event) => setPublishForm({ ...publishForm, sourceUrl: event.target.value })} /></div>
         <div className="form-field"><Label htmlFor="publish-license">License</Label><Input id="publish-license" required maxLength={200} value={publishForm.license} onChange={(event) => setPublishForm({ ...publishForm, license: event.target.value })} /></div>
         <div className="form-field"><Label htmlFor="publish-fiscal-years">Fiscal years (comma separated)</Label><Input id="publish-fiscal-years" required placeholder="2024, 2025" value={publishForm.fiscalYears} onChange={(event) => setPublishForm({ ...publishForm, fiscalYears: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-fields">Field definitions, one per line as name:type:description</Label><textarea id="publish-fields" required placeholder="amount:number:Amount in pesos" value={publishForm.fields} onChange={(event) => setPublishForm({ ...publishForm, fields: event.target.value })} /></div>
-        <div className="form-field"><Label htmlFor="publish-limitations">Limitations, one per line</Label><textarea id="publish-limitations" value={publishForm.limitations} onChange={(event) => setPublishForm({ ...publishForm, limitations: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-fields">Field definitions, one per line as name:type:description</Label><textarea id="publish-fields" required maxLength={20000} placeholder="amount:number:Amount in pesos" value={publishForm.fields} onChange={(event) => setPublishForm({ ...publishForm, fields: event.target.value })} /></div>
+        <div className="form-field"><Label htmlFor="publish-limitations">Limitations, one per line</Label><textarea id="publish-limitations" maxLength={4000} value={publishForm.limitations} onChange={(event) => setPublishForm({ ...publishForm, limitations: event.target.value })} /></div>
         <Button type="submit" variant="primary" size="md" isLoading={publishing} disabled={publishing}>{publishing ? 'Publishing…' : 'Publish draft'}</Button>
         {publishStatus && <p role="status" className="muted">{publishStatus}</p>}
         {publishError && <p role="alert" className="error">{publishError}</p>}

@@ -34,6 +34,10 @@ as no review at all.
   see migrations, tests, or the other modules that define the real contract. Report a
   genuinely undocumented *new* route in one line at most; do not fail the change for it.
 - Keep the API a public boundary: validate input, never accept arbitrary SQL.
+- Bounds are enforced **at the boundary**: routes cap bodies and rows, and the worker
+  enforces its own caps. `api/src/store.ts` is the trusted layer behind them and is not
+  required to re-implement the same caps; a store function taking an array or a Buffer is
+  already receiving input the boundary has measured.
 
 ## React (frontend/)
 

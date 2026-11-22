@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { Pool, type PoolClient } from 'pg';
 import { catalog, type DatasetRelease } from './catalog.js';
 import type { CheckStatus, DriftReport, ReleaseFingerprint } from './refresh.js';
@@ -49,8 +49,11 @@ export async function registerDraftRelease(name: string, filename: string, data:
   const checksum = createHash('sha256').update(data).digest('hex');
   const createdAt = new Date().toISOString();
   const status: DraftStatus = options.quarantineReason ? 'quarantined' : options.validationStatus === 'Pass' ? 'validated' : 'private-draft';
+  // The filename arrives from a request; only its basename, with a safe alphabet, may
+  // reach the filesystem, or a crafted value would write outside the uploads directory.
+  const safeFilename = basename(filename).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'upload';
   await mkdir(join(process.cwd(), 'data', 'uploads'), { recursive: true });
-  await writeFile(join(process.cwd(), 'data', 'uploads', `${id}-${filename}`), data, { flag: 'wx' });
+  await writeFile(join(process.cwd(), 'data', 'uploads', `${id}-${safeFilename}`), data, { flag: 'wx' });
   const release = { id, name, filename, checksum, status, createdAt };
   draftReleases.set(id, release);
   if (pool) {
@@ -87,10 +90,7 @@ export async function saveImportRows(publicId: string, offset: number, rows: Arr
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const params: unknown[] = [draftId];
-    const tuples = rows.map((_, index) => `($1, $${index * 2 + 2}, $${index * 2 + 3}::jsonb)`);
-    rows.forEach((row, index) => params.push(offset + index + 1, JSON.stringify(row)));
-    await client.query(`INSERT INTO import_rows (draft_id, row_number, data) VALUES ${tuples.join(', ')}`, params);
+    await insertRowBatch(client, 'INSERT INTO import_rows (draft_id, row_number, data)', draftId, offset, rows);
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   return rows.length;
@@ -219,12 +219,25 @@ export async function datasetReleaseExists(id: string): Promise<boolean> {
 
 type ReleaseRowPage = { offset: number; rows: Array<Record<string, unknown>> };
 
+// shortcut: one statement carries two parameters per row and Postgres accepts 65,535, so
+// batches of 1,000 rows (2,001 parameters) stay inside it however large a caller's array
+// gets. Today every caller pages at 1,000 rows, so this split is a guard against a future
+// caller, not a path exercised by tests.
+const rowBatchSize = 1000;
+
+const insertRowBatch = async (client: PoolClient, insertPrefix: string, id: string, offset: number, rows: Array<Record<string, unknown>>): Promise<void> => {
+  for (let start = 0; start < rows.length; start += rowBatchSize) {
+    const batch = rows.slice(start, start + rowBatchSize);
+    const params: unknown[] = [id];
+    const tuples = batch.map((_, index) => `($1, $${index * 2 + 2}, $${index * 2 + 3}::jsonb)`);
+    batch.forEach((row, index) => params.push(offset + start + index + 1, JSON.stringify(row)));
+    await client.query(`${insertPrefix} VALUES ${tuples.join(', ')}`, params);
+  }
+};
+
 const writeReleaseRows = async (client: PoolClient, releaseId: string, offset: number, rows: Array<Record<string, unknown>>): Promise<number> => {
   if (!rows.length) return 0;
-  const params: unknown[] = [releaseId];
-  const tuples = rows.map((_, index) => `($1, $${index * 2 + 2}, $${index * 2 + 3}::jsonb)`);
-  rows.forEach((row, index) => params.push(offset + index + 1, JSON.stringify(row)));
-  await client.query(`INSERT INTO release_rows (release_id, row_number, data) VALUES ${tuples.join(', ')}`, params);
+  await insertRowBatch(client, 'INSERT INTO release_rows (release_id, row_number, data)', releaseId, offset, rows);
   return rows.length;
 };
 
@@ -275,12 +288,17 @@ export async function insertPinnedRelease(input: {
   return id;
 }
 
+// A release read has a ceiling even when the caller does not ask for one: pinning caps rows
+// at 200,000, so a query without a limit would materialize that whole set for one caller.
+const maxReleaseRowsRead = 200_000;
+
 export async function getReleaseRows(releaseId: string, limit?: number): Promise<Array<Record<string, unknown>>> {
   if (!pool) return [];
-  const bounded = limit !== undefined && Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : undefined;
+  const requested = limit !== undefined && Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : maxReleaseRowsRead;
+  const bounded = Math.min(requested, maxReleaseRowsRead);
   const result = await pool.query(
-    `SELECT data FROM release_rows WHERE release_id = $1 ORDER BY row_number${bounded === undefined ? '' : ' LIMIT $2'}`,
-    bounded === undefined ? [releaseId] : [releaseId, bounded],
+    'SELECT data FROM release_rows WHERE release_id = $1 ORDER BY row_number LIMIT $2',
+    [releaseId, bounded],
   );
   return result.rows.map((row) => row.data as Record<string, unknown>);
 }
@@ -459,7 +477,14 @@ export async function saveNormalizedCoverage(rows: Array<{ DatasetReleaseID: str
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (id) DO NOTHING`,
         [release.id, release.name, release.publisher, release.sourceUrl, release.releaseId, release.checksum, release.reuseTerms, release.status,
-          JSON.stringify({ coverage: release.coverage, fields: release.fields, limitations: release.limitations })],
+          JSON.stringify({ coverage: release.coverage, fields: release.fields, limitations: release.limitations,
+            // The insights path reads this schema, and dataset_releases is append-only, so
+            // it has to be declared when the release is created rather than added later.
+            schema: { columns: [
+              { name: 'fiscal_year', type: 'integer' }, { name: 'coverage_status', type: 'text' },
+              { name: 'source_row_count', type: 'integer' }, { name: 'amount_pesos', type: 'number' },
+              { name: 'notes', type: 'text' },
+            ] } })],
       );
       // The seed creates the canonical release, so it also creates the curated
       // relationship once its synthetic counterpart exists from migration 018.
@@ -509,10 +534,14 @@ export async function getRelationship(id: string): Promise<Relationship | undefi
 
 export async function getJoinRows(releaseId: string, limit?: number): Promise<Array<{ fiscal_year: number; coverage_status: string; source_row_count: number }>> {
   if (!pool) return [];
-  // The limit is pushed into the query so an oversized release is never materialized.
+  // The limit is pushed into the query so an oversized release is never materialized, and
+  // there is always one: an absent or invalid value falls back to the same ceiling rather
+  // than removing the clause.
+  const ceiling = 200_000;
+  const bound = Number.isSafeInteger(limit) && (limit as number) > 0 ? Math.min(limit as number, ceiling) : ceiling;
   const result = await pool.query(
-    `SELECT fiscal_year, coverage_status, source_row_count FROM coverage_records WHERE dataset_release_id = $1 ORDER BY fiscal_year${limit ? ' LIMIT $2' : ''}`,
-    limit ? [releaseId, limit] : [releaseId],
+    'SELECT fiscal_year, coverage_status, source_row_count FROM coverage_records WHERE dataset_release_id = $1 ORDER BY fiscal_year LIMIT $2',
+    [releaseId, bound],
   );
   return result.rows.map((row) => ({ fiscal_year: row.fiscal_year, coverage_status: row.coverage_status, source_row_count: row.source_row_count }));
 }

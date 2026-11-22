@@ -1180,7 +1180,9 @@ test('a run over a pinned release produces insights and skips with reasons', asy
 
 test('a run refuses releases without rows and unknown ids', async (t) => {
   if (!ready(t)) return;
-  const missingRows = await api('/api/v1/runs', { method: 'POST', body: { release_ids: ['bettergov-gaa-coverage-2026-11-07'] } });
+  // The seed now stores analysis rows for the verified release, so this uses an id that
+  // has none — the path under test is the refusal, not a particular dataset.
+  const missingRows = await api('/api/v1/runs', { method: 'POST', body: { release_ids: [`release-without-rows-${randomUUID()}`] } });
   assert.equal(missingRows.status, 400);
   assert.equal((await responseJson<{ error: string }>(missingRows)).error, 'release_not_pinned');
 
@@ -1510,5 +1512,21 @@ test('a sub-resource of an unknown finding is 404, not an empty list', async (t)
   for (const path of [`/api/v1/findings/${missing}/comments`, `/api/v1/findings/${missing}/history`, `/api/v1/findings/${missing}/explanation`]) {
     const response = await api(path);
     assert.equal(response.status, 404, path);
+  }
+});
+
+
+test('a draft filename cannot escape the uploads directory', async (t) => {
+  if (!ready(t)) return;
+  const owner = await maintainer();
+  const response = await api('/api/v1/imports/register?filename=..%2F..%2Fetc%2Fpasswd&name=Escape%20attempt', {
+    method: 'POST', cookie: owner.cookie, body: 'year\n2024\n',
+  });
+  // Either the route refuses it (expected) or it is stored under a safe basename; what must
+  // never happen is a write outside data/uploads.
+  assert.ok([201, 400, 422].includes(response.status), `status ${response.status}`);
+  if (response.status === 201) {
+    const body = await responseJson<{ id: string; filename: string }>(response);
+    assert.ok(!body.filename.includes('..'), `stored filename ${body.filename}`);
   }
 });

@@ -254,6 +254,16 @@ export async function saveReleaseRows(releaseId: string, offset: number, rows: A
 }
 
 // A pinned release is a new row: a fetch-on-demand snapshot is never edited.
+// Any release that represents this portal dataset, whatever bytes it was pinned from.
+export async function findReleaseForDataset(connectorId: string, datasetId: string): Promise<string | undefined> {
+  if (!pool) return undefined;
+  const result = await pool.query(
+    'SELECT id FROM dataset_releases WHERE connector_id = $1 AND source_dataset_id = $2 ORDER BY created_at LIMIT 1',
+    [connectorId, datasetId],
+  );
+  return result.rows[0]?.id as string | undefined;
+}
+
 export async function findPinnedRelease(connectorId: string, datasetId: string, checksum: string): Promise<string | undefined> {
   if (!pool) return undefined;
   const result = await pool.query(
@@ -286,6 +296,29 @@ export async function insertPinnedRelease(input: {
     await client.query('COMMIT');
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   return id;
+}
+
+// A portal dataset that cannot be analysed still belongs in the catalog: the reader can see
+// what the source publishes, its licence and its link, while the interface states that
+// insights cannot run on it. It carries no rows and no schema by design.
+export async function insertCatalogEntry(input: {
+  connectorId: string; datasetId: string; name: string; description: string;
+  attribution: string; licence?: string; sourceUrl: string; sourceUpdatedAt?: string;
+}): Promise<{ id: string; created: boolean }> {
+  if (!pool) throw new Error('database_required');
+  const id = `catalog-${input.connectorId}-${input.datasetId}`.toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+  const result = await pool.query(
+    `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata,
+       connector_id, source_dataset_id, attribution, licence_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'current', $8, $9, $10, $11, $12)
+     ON CONFLICT (id) DO NOTHING
+     RETURNING id`,
+    [id, input.name, input.attribution, input.sourceUrl, input.datasetId, 'catalog-only', input.licence ?? 'unconfirmed',
+      JSON.stringify({ catalogOnly: true, description: input.description,
+        ...(input.sourceUpdatedAt ? { sourceUpdatedAt: input.sourceUpdatedAt } : {}) }),
+      input.connectorId, input.datasetId, input.attribution, input.licence ? 'confirmed' : 'unconfirmed'],
+  );
+  return { id, created: result.rowCount === 1 };
 }
 
 // A release read has a ceiling even when the caller does not ask for one: pinning caps rows
@@ -473,8 +506,9 @@ export async function saveNormalizedCoverage(rows: Array<{ DatasetReleaseID: str
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata,
+           connector_id, source_dataset_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (id) DO NOTHING`,
         [release.id, release.name, release.publisher, release.sourceUrl, release.releaseId, release.checksum, release.reuseTerms, release.status,
           JSON.stringify({ coverage: release.coverage, fields: release.fields, limitations: release.limitations,
@@ -484,15 +518,11 @@ export async function saveNormalizedCoverage(rows: Array<{ DatasetReleaseID: str
               { name: 'fiscal_year', type: 'integer' }, { name: 'coverage_status', type: 'text' },
               { name: 'source_row_count', type: 'integer' }, { name: 'amount_pesos', type: 'number' },
               { name: 'notes', type: 'text' },
-            ] } })],
-      );
-      // The seed creates the canonical release, so it also creates the curated
-      // relationship once its synthetic counterpart exists from migration 018.
-      if (release.id === 'bettergov-gaa-coverage-2026-11-07') await client.query(
-        `INSERT INTO dataset_relationships (id, name, primary_release_id, related_release_id, join_keys, status)
-         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
-        ['11111111-2222-3333-4444-555555555555', 'mvp-d-gaa-to-synthetic-fixture', release.id,
-          'join-fixture-2026-11-07', JSON.stringify(['fiscal_year']), 'validated'],
+            ] } }),
+          // The verified release IS portal dataset 27; recording that lets the catalog
+          // avoid listing the same dataset twice.
+          release.id === 'bettergov-gaa-coverage-2026-11-07' ? 'bettergov' : null,
+          release.id === 'bettergov-gaa-coverage-2026-11-07' ? '27' : null],
       );
       for (const row of rows) await client.query(
         `INSERT INTO coverage_records (dataset_release_id, fiscal_year, coverage_status, source_row_count, amount_pesos, scopes, notes)
@@ -523,6 +553,14 @@ export async function saveEvidence(input: Omit<Evidence, 'id' | 'createdAt'>): P
 }
 
 export type Relationship = { id: string; primaryReleaseId: string; relatedReleaseId: string; joinKeys: string[]; status: 'draft' | 'validated' | 'retired' };
+
+// The curated path needs a validated pair; when a caller names none, the first one is used
+// rather than a hardcoded id that may no longer exist.
+export async function firstValidatedRelationship(): Promise<string | undefined> {
+  if (!pool) return undefined;
+  const result = await pool.query("SELECT id FROM dataset_relationships WHERE status = 'validated' ORDER BY created_at LIMIT 1");
+  return result.rows[0]?.id as string | undefined;
+}
 
 export async function getRelationship(id: string): Promise<Relationship | undefined> {
   if (!pool) return undefined;

@@ -86,13 +86,8 @@ try {
   console.log('OK dataset upload section is available');
 
   await openView(maintainerPage, 'Analyse');
-  const join = maintainerPage.getByRole('region', { name: 'Curated join' });
-  await join.getByRole('button', { name: 'Run curated join' }).click();
-  await join.getByText(/Curated join finished: 27 matched rows/).waitFor();
-  const joinText = await join.textContent();
-  assert.ok(joinText?.includes('Passed'), `join reproducibility missing: ${joinText}`);
-  assert.ok(/synthetic/i.test(joinText ?? ''), 'join fixture is not labeled as synthetic');
-  console.log('OK curated join runs and renders diagnostics with the synthetic-fixture warning');
+  // The curated-join section was removed with the synthetic fixture it depended on; the
+  // two-release join in the same view is covered by the run checks below.
 
   // Charts: each recipe renders a figure, data points are focusable and labelled,
   // and the trend breaks at the years with no GAA instead of drawing a zero.

@@ -228,7 +228,6 @@ function App() {
   const [joined, setJoined] = useState<JoinedAnalysis>();
   const [joinedError, setJoinedError] = useState('');
   const [joinedStatus, setJoinedStatus] = useState('');
-  const [joining, setJoining] = useState(false);
   const [finding, setFinding] = useState<Finding>();
   const [findingError, setFindingError] = useState('');
   const [claim, setClaim] = useState('');
@@ -650,18 +649,6 @@ function App() {
     finally { setPublishing(false); }
   }
 
-  async function runCuratedJoin() {
-    setJoining(true); setJoinedError(''); setJoined(undefined);
-    setJoinedStatus('Running the curated join with a deterministic rerun check…');
-    try {
-      const body = await apiRequest<JoinedAnalysis>('/api/v1/join/analyze', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-      setJoined(body);
-      setJoinedStatus(`Curated join finished: ${body.matched_rows ?? 0} matched rows.`);
-    } catch (reason) {
-      setJoinedStatus('');
-      setJoinedError(failureStatus(reason) === 404 ? 'Curated relationship not found.' : failureMessage(reason, 'Curated join failed.'));
-    } finally { setJoining(false); }
-  }
 
   function toggleDataset(id: string) {
     const next = selectedIds.includes(id) ? selectedIds.filter((item) => item !== id)
@@ -1012,35 +999,6 @@ function App() {
           <p><a href={`${apiBase}/api/v1/runs/${runResult.run_id}`}>View this run's public JSON</a></p>
         </div>
       </>}
-      </Card>
-    </section>
-    <section aria-labelledby="join-heading">
-      <Card className="card">
-      <h2 id="join-heading">Curated join</h2>
-      <p>Joins the validated BetterGov GAA coverage release with a clearly labeled <strong>synthetic fixture</strong> on the explicit <code>fiscal_year</code> key. The fixture is test data, not a real government dataset, and no other dataset pair can be joined here. Diagnostics show unmatched rows and duplicate keys instead of hiding them.</p>
-      <Button type="button" variant="primary" size="md" onClick={runCuratedJoin} isLoading={joining} disabled={joining}>{joining ? 'Joining…' : 'Run curated join'}</Button>
-      {joinedStatus && <p role="status" className="muted">{joinedStatus}</p>}
-      {joinedError && <p role="alert" className="error">{joinedError}</p>}
-      {joined && <div className="join-result">
-        <h3>Join diagnostics</h3>
-        <dl className="diagnostics">
-          <div><dt>Matched rows</dt><dd>{joined.matched_rows ?? 0}</dd></div>
-          <div><dt>Unmatched left rows</dt><dd>{joined.unmatched_left ?? 0}</dd></div>
-          <div><dt>Unmatched right rows</dt><dd>{joined.unmatched_right ?? 0}</dd></div>
-          <div><dt>Duplicate right keys</dt><dd>{joined.duplicate_right_keys ?? 0}</dd></div>
-          <div><dt>Input rows, left</dt><dd>{joined.input_left_rows ?? 0}</dd></div>
-          <div><dt>Input rows, right</dt><dd>{joined.input_right_rows ?? 0}</dd></div>
-          <div><dt>Reproducibility</dt><dd>{joined.reproducibility_status ?? 'Not run'}</dd></div>
-          <div><dt>Validation</dt><dd>{joined.validation?.status ?? 'Not run'}</dd></div>
-          <div><dt>Relationship</dt><dd><code>{joined.relationship_id ?? 'unknown'}</code></dd></div>
-        </dl>
-        {joined.validation?.checks && joined.validation.checks.length > 0 && <ul>{joined.validation.checks.map((check) => <li key={check}>{check}</li>)}</ul>}
-        {joined.warnings && joined.warnings.length > 0 && <><h4>Warnings</h4><ul>{joined.warnings.map((item) => <li key={item}>{item}</li>)}</ul></>}
-        {joined.limitations?.map((item) => <p className="muted" key={item}>{item}</p>)}
-        <p className="muted">This is a joined analysis candidate; it has not been human-reviewed.</p>
-        {joined.evidence_id ? <p><a href={`${apiBase}/api/v1/evidence/${encodeURIComponent(joined.evidence_id)}`}>View joined evidence JSON</a> · Evidence: <code>{joined.evidence_id}</code></p> : <p className="muted">No evidence record was returned.</p>}
-        {joined.finding_id && <p><a href={`${apiBase}/api/v1/findings/${encodeURIComponent(joined.finding_id)}/page`}>View finding page</a></p>}
-      </div>}
       </Card>
     </section>
       </>}

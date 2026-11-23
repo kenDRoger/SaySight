@@ -899,7 +899,33 @@ test('a saved view cannot reference an unknown release', async (t) => {
 
 test('the curated join runs twice and records joined evidence', async (t) => {
   if (!ready(t)) return;
-  const response = await api('/api/v1/join/analyze', { method: 'POST', body: {} });
+  // The old global fixture was removed as non-descriptive, so this test seeds the pair it
+  // joins and the relationship between them.
+  const { Pool } = await import('pg');
+  const client = new Pool({ connectionString: databaseUrl });
+  const left = `release-join-left-${randomUUID()}`;
+  const right = `release-join-right-${randomUUID()}`;
+  for (const [id, column] of [[left, 'amount'], [right, 'population']] as const) {
+    await client.query(
+      `INSERT INTO dataset_releases (id, name, publisher, source_url, release_id, checksum, reuse_terms, status, metadata)
+       VALUES ($1, $1, 'test', 'test', $1, 'test', 'test', 'current', $2) ON CONFLICT (id) DO NOTHING`,
+      [id, JSON.stringify({ schema: { columns: [{ name: 'fiscal_year', type: 'integer' }, { name: column, type: 'number' }] } })],
+    );
+  }
+  // The curated join reads coverage_records, so the pair is seeded there.
+  for (const id of [left, right]) {
+    await client.query(
+      `INSERT INTO coverage_records (dataset_release_id, fiscal_year, coverage_status, source_row_count, scopes, notes)
+       SELECT $1, 2000 + ord - 1, 'test_scope', ord, '{}'::jsonb, '[]'::jsonb
+       FROM generate_series(1, 27) AS ord ON CONFLICT DO NOTHING`, [id]);
+  }
+  const relationship = await client.query(
+    `INSERT INTO dataset_relationships (id, name, primary_release_id, related_release_id, join_keys, status)
+     VALUES (gen_random_uuid(), $3, $1, $2, '["fiscal_year"]', 'validated') RETURNING id`,
+    [left, right, `pair-${randomUUID()}`]);
+  await client.end();
+  // Named explicitly: an earlier run may have left other validated pairs behind.
+  const response = await api('/api/v1/join/analyze', { method: 'POST', body: { relationship_id: relationship.rows[0].id } });
   const text = await responseText(response);
   assert.equal(response.status, 200, text);
   const joined = JSON.parse(text) as { matched_rows: number; evidence_id: string; reproducibility_status: string; relationship_id: string };
@@ -1547,4 +1573,32 @@ test('a worker rejection reaches the client as JSON with the reason', async (t) 
   const validateBody = await responseJson<{ error?: string; message?: string }>(validate);
   assert.notEqual(validate.status, 503, 'a client error must not look like an outage');
   if (validate.status >= 400) assert.ok(validateBody.error, 'errors stay in the JSON contract');
+});
+
+test('a portal dataset that cannot be pinned is still catalogued, once', async (t) => {
+  if (!ready(t)) return;
+  // Anonymous and submitter callers cannot write to the catalog.
+  assert.equal((await api('/api/v1/catalog/entries', { method: 'POST', body: { connector_id: 'bettergov', dataset_id: 'x', name: 'x', source_url: 'x' } })).status, 401);
+  const submitter = await signIn('catalog-submitter');
+  assert.equal((await api('/api/v1/catalog/entries', { method: 'POST', cookie: submitter.cookie, body: { connector_id: 'bettergov', dataset_id: 'x', name: 'x', source_url: 'x' } })).status, 403);
+
+  const owner = await maintainer();
+  const entry = {
+    connector_id: 'bettergov', dataset_id: `probe-${randomUUID()}`, name: 'Probe portal dataset',
+    description: 'A dataset the portal publishes as vector tiles.', attribution: 'BetterGovPH',
+    licence: 'CC0 1.0', source_url: 'https://data.bettergov.ph/datasets/probe',
+  };
+  const created = await api('/api/v1/catalog/entries', { method: 'POST', cookie: owner.cookie, body: entry });
+  const createdText = await responseText(created);
+  assert.equal(created.status, 201, createdText);
+  const releaseId = (JSON.parse(createdText) as { release_id: string }).release_id;
+
+  // It appears in the catalog with no analysis rows, and a second call does not duplicate it.
+  const catalog = await responseJson<{ datasets: Array<{ id: string; name: string; rowCount?: number }> }>(await api('/api/v1/datasets'));
+  const listed = catalog.datasets.find((row) => row.id === releaseId);
+  assert.equal(listed?.name, 'Probe portal dataset');
+  assert.equal(listed?.rowCount, 0);
+  const again = await api('/api/v1/catalog/entries', { method: 'POST', cookie: owner.cookie, body: entry });
+  assert.equal(again.status, 200);
+  assert.equal((await responseJson<{ release_id: string }>(again)).release_id, releaseId);
 });

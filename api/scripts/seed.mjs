@@ -5,7 +5,7 @@
 // anonymous write, which the API refuses.
 import { execFileSync } from 'node:child_process';
 
-const api = process.env.API_INTERNAL_URL ?? 'http://localhost:3000';
+const api = process.env.API_INTERNAL_URL ?? 'http://127.0.0.1:3000';
 const email = process.env.SAYSIGHT_MAINTAINER_EMAIL ?? 'maintainer@example.org';
 const composeFile = process.env.COMPOSE_FILE ?? 'docker-compose.yml';
 const release = 'bettergov-gaa-coverage-2026-11-07';

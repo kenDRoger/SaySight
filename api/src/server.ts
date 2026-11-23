@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { catalog } from './catalog.js';
 import { workerFetch } from './worker.js';
 import { createGate } from './gate.js';
-import { createComment, listPublicFindings, createFinding, getRun, insertInsight, insertRun, createSavedView, countReleaseRows, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, getReleaseRowSchema, getReleaseRows, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveReleaseRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
+import { createComment, listPublicFindings, createFinding, getRun, insertInsight, insertRun, createSavedView, countReleaseRows, datasetReleaseExists, findPinnedRelease, getComment, getCatalogReleases, getEvidence, getFinding, getImportDraft, getJoinRows, getLatestExplanation, getRelationship, getReleaseRowSchema, getReleaseRows, findReleaseForDataset, firstValidatedRelationship, insertCatalogEntry, insertConnectorCheck, insertPinnedRelease, latestConnectorChecks, listAgencies, getNormalizedCoverage, getReleaseFingerprint, insertReleaseCheck, listComments, listConflicts, listDecisionTransitions, listDraftReleases, listReviewQueue, listSavedViews, listTransitions, pool, publishImportDraft, recordConflict, recordTransition, registerDraftRelease, removeComment, saveEvidence, saveExplanation, saveImportRows, saveReleaseRows, saveJoinedRun, saveNormalizedCoverage } from './store.js';
 import { inferReleaseSchema, licenceStatus, pinSummary, releaseKey } from './pin.js';
 import { executeJoin, joinedSchema, limitJoinedRows } from './joinRun.js';
 import { connectors, getConnector } from './connectors.js';
@@ -712,6 +712,39 @@ const server = createServer((request, response) => {
     return;
   }
 
+  // A portal dataset that cannot be analysed is still catalogued by a maintainer: the
+  // catalog then reflects what the source publishes, and the interface says plainly that
+  // insights cannot run on it.
+  if (request.method === 'POST' && request.url === '/api/v1/catalog/entries') {
+    if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
+    readBoundedBody(request, maxJsonBytes).then(async (incoming) => {
+      if ('denied' in incoming) { json(response, 413, { error: 'request_too_large' }); return; }
+      if ('failed' in incoming) { json(response, 400, { error: 'invalid_request_body' }); return; }
+      const user = await auth.session(requestSessionToken(request)).catch(() => undefined);
+      if (!user) { json(response, 401, { error: 'sign_in_required' }); return; }
+      if (user.role !== 'maintainer') { json(response, 403, { error: 'maintainer_required' }); return; }
+      const parsed = objectPayload(incoming.data);
+      if (!parsed) { json(response, 400, { error: 'invalid_json' }); return; }
+      const field = (name: string) => typeof parsed[name] === 'string' && (parsed[name] as string).trim() ? (parsed[name] as string).trim() : undefined;
+      const connectorId = field('connector_id');
+      const datasetId = field('dataset_id');
+      const name = field('name');
+      const sourceUrl = field('source_url');
+      if (!connectorId || !datasetId || !name || !sourceUrl) { json(response, 400, { error: 'catalog_entry_incomplete' }); return; }
+      if (!getConnector(connectorId)) { json(response, 404, { error: 'connector_not_found' }); return; }
+      // A release that already represents this portal dataset is not catalogued twice.
+      const existing = await findReleaseForDataset(connectorId, datasetId).catch(() => undefined);
+      if (existing) { json(response, 200, { release_id: existing, created: false }); return; }
+      try {
+        const entry = await insertCatalogEntry({ connectorId, datasetId, name, sourceUrl,
+          description: field('description') ?? '', attribution: field('attribution') ?? 'unknown',
+          licence: field('licence'), sourceUpdatedAt: field('source_updated_at') });
+        json(response, entry.created ? 201 : 200, { release_id: entry.id, created: entry.created });
+      } catch { json(response, 503, { error: 'catalog_entry_unavailable' }); }
+    }).catch(() => json(response, 503, { error: 'catalog_entry_unavailable' }));
+    return;
+  }
+
   const pinMatch = request.method === 'POST' ? request.url?.match(/^\/api\/v1\/connectors\/([^/]+)\/pin$/) : undefined;
   if (pinMatch) {
     if (!auth) { json(response, 503, { error: 'accounts_unavailable' }); return; }
@@ -1189,7 +1222,9 @@ const server = createServer((request, response) => {
       const parsedPayload = objectPayload(incoming.data);
       if (!parsedPayload) { json(response, 400, { error: 'invalid_json' }); return; }
       const payload = parsedPayload as { relationship_id?: unknown };
-      const relationshipId = typeof payload.relationship_id === 'string' ? payload.relationship_id : '11111111-2222-3333-4444-555555555555';
+      const namedRelationship = typeof payload.relationship_id === 'string' ? payload.relationship_id : await firstValidatedRelationship();
+      if (!namedRelationship) { json(response, 404, { error: 'relationship_not_found' }); return; }
+      const relationshipId = namedRelationship;
       // The id goes straight into a uuid column, so a malformed one is rejected here
       // rather than surfacing as a cast error reported as an outage.
       if (!recordId.test(relationshipId)) { json(response, 400, { error: 'invalid_relationship_id' }); return; }

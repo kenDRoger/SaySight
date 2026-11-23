@@ -115,7 +115,7 @@ async function runAudit() {
     ['findings list', '[aria-labelledby="findings-heading"]', 'Findings'],
     ['datasets', '[aria-labelledby="dataset-heading"]', 'Datasets'],
     ['sources', '[aria-labelledby="sources-heading"]', 'Datasets'],
-    ['curated join', '[aria-labelledby="join-heading"]', 'Analyse'],
+    ['analyse', '[aria-labelledby="analysis-heading"]', 'Analyse'],
   ];
   const results = [];
   const tags = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
